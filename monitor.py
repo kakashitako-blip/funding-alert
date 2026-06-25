@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """
-Funding Rate Alert Bot
-Scans funding rates across major CEXs every 15 minutes.
+Funding Rate Alert Bot — powered by Coinglass scraping.
+Scans every 15 minutes, alerts via Telegram.
 
-Two alert modes:
-1. SCAN: fires when any coin's funding enters the -1.5% to -2.5% zone
-2. WATCHLIST: fires on ANY funding change for coins you're trading/considering
-
-Runs as a long-lived process (for cloud deploy) or one-shot via --once.
+Two modes:
+1. SCAN: "Lowest Funding Rate" box → alert when any coin enters -1.5% to -2.5%
+2. WATCHLIST: per-coin Coinglass page → alert on 0.2%+ change across all exchanges
 """
 
 import requests
 import json
 import os
 import sys
+import re
 import time
 from datetime import datetime, timezone
 
@@ -24,10 +23,9 @@ WATCHLIST_FILE = os.path.join(SCRIPT_DIR, "watchlist.txt")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8928254387:AAGNfwUxrbmCQgV-Y4dxvwrPnvlCZI3hZeo")
 CHAT_ID = os.environ.get("CHAT_ID", "1323857029")
 
-SCAN_LOW = -0.025   # -2.5%
-SCAN_HIGH = -0.015  # -1.5%
-WATCH_DELTA = 0.002 # alert on 0.2% change for watchlist coins
-INTERVAL = 900      # 15 minutes
+SCAN_LOW = -2.5
+SCAN_HIGH = -1.5
+WATCH_DELTA = 0.2
 
 
 def log(msg):
@@ -60,129 +58,6 @@ def load_watchlist():
         return {line.strip().upper() for line in f if line.strip() and not line.startswith("#")}
 
 
-# ── Exchange fetchers ────────────────────────────────────────────
-
-def fetch_binance():
-    try:
-        r = requests.get(
-            "https://fapi.binance.com/fapi/v1/premiumIndex", timeout=10
-        )
-        data = r.json()
-        if not isinstance(data, list):
-            log(f"Binance returned non-list: {str(data)[:200]}")
-            return []
-        out = []
-        for item in data:
-            sym = item["symbol"]
-            if not sym.endswith("USDT"):
-                continue
-            out.append({
-                "coin": sym[:-4],
-                "exchange": "Binance",
-                "rate": float(item.get("lastFundingRate", 0)),
-                "interval": "8h",
-            })
-        return out
-    except Exception as e:
-        log(f"Binance fetch error: {e}")
-        return []
-
-
-def fetch_bybit():
-    try:
-        r = requests.get(
-            "https://api.bybit.com/v5/market/tickers?category=linear", timeout=10
-        )
-        data = r.json()
-        items = data.get("result", {}).get("list", [])
-        if not items:
-            log(f"Bybit returned no data: {str(data)[:200]}")
-            return []
-        out = []
-        for item in items:
-            sym = item["symbol"]
-            if not sym.endswith("USDT"):
-                continue
-            out.append({
-                "coin": sym[:-4],
-                "exchange": "Bybit",
-                "rate": float(item.get("fundingRate", 0)),
-                "interval": "8h",
-            })
-        return out
-    except Exception as e:
-        log(f"Bybit fetch error: {e}")
-        return []
-
-
-def fetch_mexc():
-    try:
-        data = requests.get(
-            "https://contract.mexc.com/api/v1/contract/ticker", timeout=10
-        ).json().get("data", [])
-        out = []
-        for item in data:
-            sym = item.get("symbol", "")
-            if not sym.endswith("_USDT"):
-                continue
-            out.append({
-                "coin": sym[:-5],
-                "exchange": "MEXC",
-                "rate": float(item.get("fundingRate", 0)),
-                "interval": "8h",
-            })
-        return out
-    except Exception as e:
-        log(f"MEXC fetch error: {e}")
-        return []
-
-
-def fetch_kucoin():
-    try:
-        data = requests.get(
-            "https://api-futures.kucoin.com/api/v1/contracts/active", timeout=10
-        ).json().get("data", [])
-        out = []
-        for item in data:
-            sym = item.get("symbol", "")
-            if not sym.endswith("USDTM"):
-                continue
-            gran_ms = int(item.get("fundingRateGranularity", 28800000))
-            out.append({
-                "coin": sym[:-5],
-                "exchange": "KuCoin",
-                "rate": float(item.get("fundingFeeRate", 0)),
-                "interval": f"{gran_ms // 3600000}h",
-            })
-        return out
-    except Exception as e:
-        log(f"KuCoin fetch error: {e}")
-        return []
-
-
-def fetch_okx_watchlist(watchlist):
-    out = []
-    for coin in watchlist:
-        try:
-            r = requests.get(
-                f"https://www.okx.com/api/v5/public/funding-rate?instId={coin}-USDT-SWAP",
-                timeout=10,
-            ).json()
-            if r.get("data"):
-                item = r["data"][0]
-                out.append({
-                    "coin": coin,
-                    "exchange": "OKX",
-                    "rate": float(item.get("fundingRate", 0)),
-                    "interval": "4h",
-                })
-        except Exception as e:
-            log(f"OKX {coin} error: {e}")
-    return out
-
-
-# ── State management ─────────────────────────────────────────────
-
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
@@ -195,7 +70,100 @@ def save_state(state):
         json.dump(state, f, indent=2)
 
 
-# ── Scan logic ───────────────────────────────────────────────────
+def get_browser():
+    from playwright.sync_api import sync_playwright
+    pw = sync_playwright().start()
+    browser = pw.chromium.launch(headless=True)
+    ctx = browser.new_context(
+        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        viewport={"width": 1920, "height": 1080},
+    )
+    return pw, browser, ctx
+
+
+# ── Coinglass scrapers ───────────────────────────────────────────
+
+def scrape_lowest_funding(page):
+    """Extract 'Lowest Funding Rate' box from main page."""
+    page.goto("https://www.coinglass.com/FundingRate", wait_until="networkidle", timeout=30000)
+    page.wait_for_timeout(5000)
+
+    text = page.evaluate("""() => {
+        const body = document.body.innerText;
+        const idx = body.indexOf('Lowest Funding Rate');
+        if (idx === -1) return '';
+        return body.substring(idx, idx + 400);
+    }""")
+
+    results = []
+    lines = text.split("\n")
+    i = 1  # skip the "Lowest Funding Rate" header
+    while i < len(lines) - 1:
+        line = lines[i].strip()
+        next_line = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        rate_match = re.match(r"^(-?\d+\.?\d*)%$", next_line)
+        if rate_match and ("/" in line):
+            parts = line.split(" ", 1)
+            if len(parts) == 2:
+                exchange = parts[0]
+                pair = parts[1]
+                coin = pair.split("/")[0]
+                rate = float(rate_match.group(1))
+                results.append({
+                    "coin": coin,
+                    "exchange": exchange,
+                    "pair": pair,
+                    "rate": rate,
+                })
+            i += 2
+        else:
+            i += 1
+
+    return results
+
+
+def scrape_coin_funding(page, coin):
+    """Scrape per-coin funding page for all exchanges."""
+    page.goto(f"https://www.coinglass.com/funding/{coin}", wait_until="networkidle", timeout=30000)
+    page.wait_for_timeout(4000)
+
+    rows = page.evaluate("""() => {
+        const rows = document.querySelectorAll('tr');
+        const out = [];
+        for (const row of rows) {
+            const tds = row.querySelectorAll('td');
+            if (tds.length < 5) continue;
+            out.push(Array.from(tds).map(td => td.innerText.replace(/\\n/g, ' ').trim()));
+        }
+        return out;
+    }""")
+
+    results = []
+    for row in rows:
+        if len(row) < 6:
+            continue
+        exchange = row[0].strip()
+        if not exchange or exchange == "Exchanges":
+            continue
+        pair = row[1].strip()
+        rate_str = row[2].strip().replace("%", "")
+        interval = row[4].strip()
+        try:
+            rate = float(rate_str)
+            results.append({
+                "coin": coin,
+                "exchange": exchange,
+                "pair": pair,
+                "rate": rate,
+                "interval": interval,
+            })
+        except ValueError:
+            continue
+
+    return results
+
+
+# ── Main ─────────────────────────────────────────────────────────
 
 def scan():
     now = datetime.now(timezone.utc)
@@ -204,131 +172,110 @@ def scan():
     watchlist = load_watchlist()
     log(f"Watchlist: {watchlist or 'empty'}")
 
-    all_rates = []
-    for fetcher in [fetch_binance, fetch_bybit, fetch_mexc, fetch_kucoin]:
-        all_rates.extend(fetcher())
+    pw, browser, ctx = get_browser()
+    page = ctx.new_page()
 
-    if watchlist:
-        all_rates.extend(fetch_okx_watchlist(watchlist))
+    try:
+        # ── MODE 1: Scan lowest funding rates ────────────────────
+        lowest = scrape_lowest_funding(page)
+        log(f"Lowest funding: {len(lowest)} entries")
+        for item in lowest:
+            log(f"  {item['coin']} {item['exchange']}: {item['rate']}%")
 
-    log(f"Fetched {len(all_rates)} pairs")
+        state = load_state()
+        prev_scan = state.get("scan", {})
+        prev_watch = state.get("watch", {})
+        messages = []
 
-    state = load_state()
-    prev_scan = state.get("scan", {})
-    prev_watch = state.get("watch", {})
-    messages = []
+        in_zone = [r for r in lowest if SCAN_LOW <= r["rate"] <= SCAN_HIGH]
+        current_scan_keys = {f"{r['exchange']}:{r['coin']}" for r in in_zone}
 
-    # ── MODE 1: Scan for funding in the -1.5% to -2.5% zone ─────
-    in_zone = sorted(
-        [r for r in all_rates if SCAN_LOW <= r["rate"] <= SCAN_HIGH],
-        key=lambda x: x["rate"],
-    )
+        scan_new = [r for r in in_zone if f"{r['exchange']}:{r['coin']}" not in prev_scan]
+        scan_gone = []
+        for key in prev_scan:
+            if key not in current_scan_keys:
+                exchange, coin = key.split(":", 1)
+                match = next((r for r in lowest if r["exchange"] == exchange and r["coin"] == coin), None)
+                rate_now = match["rate"] if match else 0
+                direction = "deeper" if rate_now < SCAN_LOW else "recovered"
+                scan_gone.append({"coin": coin, "exchange": exchange, "rate": rate_now, "direction": direction})
 
-    scan_new = []
-    scan_gone = []
-    current_scan_keys = {f"{r['exchange']}:{r['coin']}" for r in in_zone}
-
-    for item in in_zone:
-        key = f"{item['exchange']}:{item['coin']}"
-        if key not in prev_scan:
-            scan_new.append(item)
-
-    for key in prev_scan:
-        if key not in current_scan_keys:
-            exchange, coin = key.split(":", 1)
-            match = next(
-                (r for r in all_rates if r["exchange"] == exchange and r["coin"] == coin),
-                None,
-            )
-            rate_now = match["rate"] if match else 0
-            direction = "deeper" if rate_now < SCAN_LOW else "recovered"
-            scan_gone.append({"coin": coin, "exchange": exchange, "rate": rate_now, "direction": direction})
-
-    if scan_new or scan_gone:
-        parts = []
-        if scan_new:
-            parts.append("\U0001f534 <b>Entered -1.5% to -2.5% zone</b>")
-            for a in scan_new:
-                parts.append(
-                    f"  <b>{a['coin']}</b> {a['exchange']}  "
-                    f"<b>{a['rate']*100:.2f}%</b> / {a['interval']}"
-                )
-        if scan_gone:
-            for g in scan_gone:
-                emoji = "\U0001f53b" if g["direction"] == "deeper" else "✅"
-                parts.append(
-                    f"{emoji} <b>{g['coin']}</b> {g['exchange']} left zone "
-                    f"({g['direction']}, now {g['rate']*100:.2f}%)"
-                )
-        parts.append(f"\n\U0001f4ca {len(in_zone)} pairs in zone  |  {now.strftime('%H:%M UTC')}")
-        messages.append("\n".join(parts))
-
-    # ── MODE 2: Watchlist — alert on any funding change ──────────
-    if watchlist:
-        watched = [r for r in all_rates if r["coin"] in watchlist]
-        watch_alerts = []
-
-        for item in watched:
-            key = f"{item['exchange']}:{item['coin']}"
-            prev_rate = prev_watch.get(key)
-            if prev_rate is None:
-                watch_alerts.append({**item, "change": "new"})
-            elif abs(item["rate"] - prev_rate) >= WATCH_DELTA:
-                watch_alerts.append({
-                    **item,
-                    "prev_rate": prev_rate,
-                    "change": "moved",
-                })
-
-        if watch_alerts:
-            parts = ["\U0001f50d <b>Watchlist Update</b>"]
-            for a in sorted(watch_alerts, key=lambda x: x["rate"]):
-                if a["change"] == "new":
-                    parts.append(
-                        f"  <b>{a['coin']}</b> {a['exchange']}  "
-                        f"<b>{a['rate']*100:.2f}%</b> / {a['interval']}"
-                    )
-                else:
-                    arrow = "⬇️" if a["rate"] < a["prev_rate"] else "⬆️"
-                    parts.append(
-                        f"  {arrow} <b>{a['coin']}</b> {a['exchange']}  "
-                        f"{a['prev_rate']*100:.2f}% → <b>{a['rate']*100:.2f}%</b> / {a['interval']}"
-                    )
-            parts.append(f"\n⏰ {now.strftime('%H:%M UTC')}")
+        if scan_new or scan_gone:
+            parts = []
+            if scan_new:
+                parts.append("\U0001f534 <b>Entered -1.5% to -2.5% zone</b>")
+                for a in scan_new:
+                    parts.append(f"  <b>{a['coin']}</b> {a['exchange']}  <b>{a['rate']:.2f}%</b>")
+            if scan_gone:
+                for g in scan_gone:
+                    emoji = "\U0001f53b" if g["direction"] == "deeper" else "✅"
+                    parts.append(f"{emoji} <b>{g['coin']}</b> {g['exchange']} left zone ({g['direction']}, now {g['rate']:.2f}%)")
+            parts.append(f"\n\U0001f4ca {now.strftime('%H:%M UTC')}")
             messages.append("\n".join(parts))
 
-        state["watch"] = {f"{r['exchange']}:{r['coin']}": r["rate"] for r in watched}
+        state["scan"] = {f"{r['exchange']}:{r['coin']}": r["rate"] for r in in_zone}
 
-    # ── Send ─────────────────────────────────────────────────────
-    for msg in messages:
-        if len(msg) > 4000:
-            msg = msg[:3950] + "\n... (truncated)"
-        if send_telegram(msg):
-            log(f"Alert sent ({len(msg)} chars)")
-        else:
-            log("Failed to send alert")
+        # ── MODE 2: Watchlist — full exchange breakdown ──────────
+        if watchlist:
+            all_watch = []
+            for coin in watchlist:
+                coin_data = scrape_coin_funding(page, coin)
+                all_watch.extend(coin_data)
+                log(f"  {coin}: {len(coin_data)} exchanges")
 
-    if not messages:
-        log(f"No changes. {len(in_zone)} in zone, {len(watchlist)} watched.")
+            watch_alerts = []
+            for item in all_watch:
+                key = f"{item['exchange']}:{item['coin']}"
+                prev_rate = prev_watch.get(key)
+                if prev_rate is None:
+                    watch_alerts.append({**item, "change": "new"})
+                elif abs(item["rate"] - prev_rate) >= WATCH_DELTA:
+                    watch_alerts.append({**item, "prev_rate": prev_rate, "change": "moved"})
 
-    state["scan"] = {f"{r['exchange']}:{r['coin']}": r["rate"] for r in in_zone}
-    state["last_run"] = now.isoformat()
-    save_state(state)
+            if watch_alerts:
+                parts = ["\U0001f50d <b>Watchlist Update</b>"]
+                for a in sorted(watch_alerts, key=lambda x: x["rate"]):
+                    interval = a.get("interval", "")
+                    if a["change"] == "new":
+                        parts.append(f"  <b>{a['coin']}</b> {a['exchange']}  <b>{a['rate']:.4f}%</b> / {interval}")
+                    else:
+                        arrow = "⬇️" if a["rate"] < a["prev_rate"] else "⬆️"
+                        parts.append(f"  {arrow} <b>{a['coin']}</b> {a['exchange']}  {a['prev_rate']:.4f}% → <b>{a['rate']:.4f}%</b> / {interval}")
+                parts.append(f"\n⏰ {now.strftime('%H:%M UTC')}")
+                messages.append("\n".join(parts))
 
-    log("Scan complete")
+            state["watch"] = {f"{r['exchange']}:{r['coin']}": r["rate"] for r in all_watch}
 
+        # ── Send ─────────────────────────────────────────────────
+        for msg in messages:
+            if len(msg) > 4000:
+                msg = msg[:3950] + "\n... (truncated)"
+            if send_telegram(msg):
+                log(f"Alert sent ({len(msg)} chars)")
+            else:
+                log("Failed to send alert")
 
-# ── Entry point ──────────────────────────────────────────────────
+        if not messages:
+            log(f"No changes. {len(in_zone)} in zone, {len(watchlist)} watched.")
+
+        state["last_run"] = now.isoformat()
+        save_state(state)
+        log("Scan complete")
+
+    finally:
+        browser.close()
+        pw.stop()
+
 
 if __name__ == "__main__":
     if "--once" in sys.argv:
         scan()
     else:
         log("Funding Alert Bot started (15min loop)")
-        send_telegram("✅ <b>Funding Alert Bot started</b>\nScanning every 15min across Binance/Bybit/MEXC/KuCoin + OKX watchlist")
+        send_telegram("✅ <b>Funding Alert Bot started</b>\nScanning Coinglass every 15min")
         while True:
             try:
                 scan()
             except Exception as e:
                 log(f"Scan crashed: {e}")
-            time.sleep(INTERVAL)
+            time.sleep(900)
