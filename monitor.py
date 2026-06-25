@@ -225,6 +225,8 @@ def scan():
 
             watch_alerts = []
             for item in all_watch:
+                if item["rate"] > -0.5:
+                    continue
                 key = f"{item['exchange']}:{item['coin']}"
                 prev_rate = prev_watch.get(key)
                 if prev_rate is None:
