@@ -64,9 +64,13 @@ def load_watchlist():
 
 def fetch_binance():
     try:
-        data = requests.get(
+        r = requests.get(
             "https://fapi.binance.com/fapi/v1/premiumIndex", timeout=10
-        ).json()
+        )
+        data = r.json()
+        if not isinstance(data, list):
+            log(f"Binance returned non-list: {str(data)[:200]}")
+            return []
         out = []
         for item in data:
             sym = item["symbol"]
@@ -86,11 +90,16 @@ def fetch_binance():
 
 def fetch_bybit():
     try:
-        data = requests.get(
+        r = requests.get(
             "https://api.bybit.com/v5/market/tickers?category=linear", timeout=10
-        ).json()["result"]["list"]
+        )
+        data = r.json()
+        items = data.get("result", {}).get("list", [])
+        if not items:
+            log(f"Bybit returned no data: {str(data)[:200]}")
+            return []
         out = []
-        for item in data:
+        for item in items:
             sym = item["symbol"]
             if not sym.endswith("USDT"):
                 continue
