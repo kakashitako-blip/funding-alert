@@ -220,7 +220,7 @@ def enrich(coin):
         b += walls
     b.append(
         f'  <a href="https://www.coinglass.com/pro/futures/LiquidationHeatMapNew?coin={coin}&type=pair">Liq heatmap</a>'
-        f' · <a href="https://www.coinglass.com/pro/futures/LiquidationMap?coin={coin}&type=pair">Liq map</a>'
+        f' · <a href="https://www.coinglass.com/pro/depth-delta?symbol=MEXC_{coin}USDT">Order book</a>'
         f' · <a href="https://www.tradingview.com/chart/?symbol=MEXC:{coin}USDT.P">Chart</a>'
     )
     return "\n".join(b)
