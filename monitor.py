@@ -163,6 +163,69 @@ def scrape_coin_funding(page, coin):
     return results
 
 
+# ── Entry-data enrichment (order flow + heatmap deep-links) ──────
+
+def enrich(coin):
+    """Pull MEXC order-flow data + build Coinglass/TV deep-links for a flagged coin.
+    MEXC works from GitHub Actions (Binance/Bybit are geo-blocked there).
+    Every part is wrapped so a missing coin still yields the deep-links."""
+    sym = f"{coin}_USDT"
+    price = chg = vol_usd = oi_usd = None
+    try:
+        t = requests.get("https://contract.mexc.com/api/v1/contract/ticker",
+                         params={"symbol": sym}, timeout=8).json().get("data", {})
+        if t:
+            price = float(t.get("lastPrice") or 0)
+            chg = float(t.get("riseFallRate") or 0) * 100
+            vol_usd = float(t.get("amount24") or 0)
+            oi_usd = float(t.get("holdVol") or 0) * price
+    except Exception:
+        pass
+
+    pump = None
+    try:
+        now = int(time.time())
+        k = requests.get(f"https://contract.mexc.com/api/v1/contract/kline/{sym}",
+                         params={"interval": "Min60", "start": now - 7*86400, "end": now},
+                         timeout=8).json().get("data", {})
+        lows, closes = k.get("low", []), k.get("close", [])
+        if lows and closes:
+            pump = (closes[-1] - min(lows)) / min(lows) * 100
+    except Exception:
+        pass
+
+    walls = []
+    try:
+        d = requests.get(f"https://contract.mexc.com/api/v1/contract/depth/{sym}",
+                         params={"limit": 50}, timeout=8).json().get("data", {})
+        asks, bids = d.get("asks", []), d.get("bids", [])
+        if asks and bids:
+            mid = (asks[0][0] + bids[0][0]) / 2
+            top = sorted(asks, key=lambda x: -x[1])[:3]
+            top.sort(key=lambda x: x[0])
+            for a in top:
+                pct = (a[0] - mid) / mid * 100
+                walls.append(f"     +{pct:.1f}%  ${a[1]*a[0]/1000:.0f}k @ {a[0]:.6g}")
+    except Exception:
+        pass
+
+    b = ["", "\U0001f4ca <b>Entry data</b> (MEXC)"]
+    if pump is not None:
+        chg_s = f" | 24h {chg:+.0f}%" if chg is not None else ""
+        b.append(f"  Pumped <b>+{pump:.0f}%</b> from 7d base{chg_s}")
+    if oi_usd:
+        b.append(f"  OI ${oi_usd/1e6:.1f}M | Vol ${vol_usd/1e6:.1f}M")
+    if walls:
+        b.append("  Ask walls (sweep targets):")
+        b += walls
+    b.append(
+        f'  <a href="https://www.coinglass.com/pro/futures/LiquidationHeatMapNew?coin={coin}&type=pair">Liq heatmap</a>'
+        f' · <a href="https://www.coinglass.com/pro/depth-delta">Depth</a>'
+        f' · <a href="https://www.tradingview.com/chart/?symbol=MEXC:{coin}USDT.P">Chart</a>'
+    )
+    return "\n".join(b)
+
+
 # ── Main ─────────────────────────────────────────────────────────
 
 def scan():
@@ -206,6 +269,8 @@ def scan():
                 parts.append("\U0001f534 <b>Entered -1.5% to -2.5% zone</b>")
                 for a in scan_new:
                     parts.append(f"  <b>{a['coin']}</b> {a['exchange']}  <b>{a['rate']:.2f}%</b>")
+                for coin in dict.fromkeys(a["coin"] for a in scan_new):
+                    parts.append(enrich(coin))
             if scan_gone:
                 for g in scan_gone:
                     emoji = "\U0001f53b" if g["direction"] == "deeper" else "✅"
@@ -243,6 +308,8 @@ def scan():
                     else:
                         arrow = "⬇️" if a["rate"] < a["prev_rate"] else "⬆️"
                         parts.append(f"  {arrow} <b>{a['coin']}</b> {a['exchange']}  {a['prev_rate']:.4f}% → <b>{a['rate']:.4f}%</b> / {interval}")
+                for coin in dict.fromkeys(a["coin"] for a in watch_alerts):
+                    parts.append(enrich(coin))
                 parts.append(f"\n⏰ {now.strftime('%H:%M UTC')}")
                 messages.append("\n".join(parts))
 
