@@ -200,7 +200,7 @@ def enrich(coin):
     MEXC works from GitHub Actions (Binance/Bybit are geo-blocked there).
     Every part is wrapped so a missing coin still yields the deep-links."""
     sym = f"{coin}_USDT"
-    price = chg = vol_usd = oi_usd = None
+    price = chg = vol_usd = oi_usd = premium = funding = None
     try:
         t = requests.get("https://contract.mexc.com/api/v1/contract/ticker",
                          params={"symbol": sym}, timeout=8).json().get("data", {})
@@ -209,6 +209,11 @@ def enrich(coin):
             chg = float(t.get("riseFallRate") or 0) * 100
             vol_usd = float(t.get("amount24") or 0)
             oi_usd = float(t.get("holdVol") or 0) * price
+            fair = float(t.get("fairPrice") or 0)
+            iprice = float(t.get("indexPrice") or 0)
+            if iprice:
+                premium = (fair - iprice) / iprice * 100   # real-time perp-vs-spot pressure
+            funding = float(t.get("fundingRate") or 0) * 100
     except Exception:
         pass
 
@@ -245,12 +250,15 @@ def enrich(coin):
         b.append(f"  Pumped <b>+{pump:.0f}%</b> from 7d base{chg_s}")
     if oi_usd:
         b.append(f"  OI ${oi_usd/1e6:.1f}M | Vol ${vol_usd/1e6:.1f}M")
+    if premium is not None:
+        b.append(f"  Premium <b>{premium:+.2f}%</b> | funding {funding:+.3f}% (MEXC live)")
     if walls:
         b.append("  Ask walls (sweep targets):")
         b += walls
     b.append(
         f'  <a href="https://www.coinglass.com/pro/futures/LiquidationHeatMapNew?coin={coin}&type=pair">Liq heatmap</a>'
         f' · <a href="https://www.coinglass.com/pro/depth-delta?symbol=MEXC_{coin}USDT">Order book</a>'
+        f' · <a href="https://www.coinglass.com/funding/{coin}">Funding (all CEX)</a>'
         f' · <a href="https://www.tradingview.com/chart/?symbol=MEXC:{coin}USDT.P">Chart</a>'
     )
     return "\n".join(b)
