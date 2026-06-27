@@ -1,4 +1,4 @@
 [
-  {"coin": "ARK", "level": 0.140, "direction": "above", "note": "🎯 Entry zone (½ size) — retest of high / liquidation band. SL 0.174 · TP1 0.111 · TP2 0.103. Confirm 1h rejection candle."},
-  {"coin": "ARK", "level": 0.150, "direction": "above", "note": "🎯 Upper entry (½ size) — unswept liquidity sweep. SL 0.174 · TP1 0.111 · TP2 0.103. Confirm 1h rejection candle."}
+  {"coin": "AGLD", "level": 0.25, "direction": "above", "note": "🎯 Entry zone (½) — Binance liquidation band. SL 0.31 (+20%) · TP1 0.195 (first liq) · TP2 0.145 (base). R~2. CONFIRM 1h rejection candle first."},
+  {"coin": "AGLD", "level": 0.265, "direction": "above", "note": "🎯 Upper entry (½) — prior-high liquidity sweep (0.265-0.27). SL 0.31 · TP1 0.195 · TP2 0.145. CONFIRM 1h rejection first."}
 ]
