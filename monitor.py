@@ -89,6 +89,16 @@ def get_price(coin):
         return None
 
 
+def trade_cmd(coin, entry, risk=5):
+    """Ready-to-paste prepare_trade command for the alert. User edits --entry
+    to their actual level (rejection/bounce) after the chart read, then runs."""
+    if not entry:
+        return ""
+    return ("\n\U0001f4cb <b>Ready-to-trade</b> (edit --entry to your level, then CONFIRM):\n"
+            f"<code>cd ~/code/funding-alert &amp;&amp; python3 prepare_trade.py {coin} "
+            f"--entry {entry:.6g} --risk {risk} --execute</code>")
+
+
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE) as f:
@@ -310,6 +320,7 @@ def scan():
                     parts.append(f"  <b>{a['coin']}</b> {a['exchange']}  <b>{a['rate']:.2f}%</b>")
                 for coin in dict.fromkeys(a["coin"] for a in scan_new):
                     parts.append(enrich(coin))
+                    parts.append(trade_cmd(coin, get_price(coin)))
             if scan_gone:
                 for g in scan_gone:
                     emoji = "\U0001f53b" if g["direction"] == "deeper" else "✅"
@@ -372,6 +383,7 @@ def scan():
                 ctx = enrich(a["coin"])
                 if ctx:
                     msg += "\n" + ctx
+                msg += trade_cmd(a["coin"], a["level"])
                 messages.append(msg)
                 fired.append(key)
                 log(f"Price alert fired: {key} at {px}")
