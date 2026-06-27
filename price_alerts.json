@@ -1,4 +1,5 @@
 [
-  {"coin": "AGLD", "level": 0.25, "direction": "above", "note": "🎯 Entry zone (½) — Binance liquidation band. SL 0.31 (+20%) · TP1 0.195 (first liq) · TP2 0.145 (base). R~2. CONFIRM 1h rejection candle first."},
-  {"coin": "AGLD", "level": 0.265, "direction": "above", "note": "🎯 Upper entry (½) — prior-high liquidity sweep (0.265-0.27). SL 0.31 · TP1 0.195 · TP2 0.145. CONFIRM 1h rejection first."}
+  {"coin": "AGLD", "level": 0.235, "direction": "above", "note": "⚠️ Roll-over watch — retest of recent high. If it REJECTS here (red 1h) instead of pushing to 0.25, short the rollover. Entry ~0.235, SL 0.282, TP 0.145. R~1.9."},
+  {"coin": "AGLD", "level": 0.25, "direction": "above", "note": "🎯 Sweep entry (½) — Binance liquidation band. SL 0.30 (+20%) · TP1 0.195 · TP2 0.145. R~2.1. CONFIRM 1h rejection first."},
+  {"coin": "AGLD", "level": 0.265, "direction": "above", "note": "🎯 Upper sweep (½) — prior-high liquidity (0.265-0.27). SL 0.31 · TP1 0.195 · TP2 0.145. R~2.3. CONFIRM 1h rejection first."}
 ]
