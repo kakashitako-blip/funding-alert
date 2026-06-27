@@ -17,17 +17,21 @@ MAX_RISK = 300.0          # hard cap — refuses bigger without editing this lin
 DEFAULT_SL_PCT = 20.0
 DEFAULT_LEVERAGE = 4      # liq (~-25%) sits beyond the -20% stop = buffer
 
-def bybit_price(coin):
-    j = requests.get("https://api.bybit.com/v5/market/tickers",
+def _api(testnet):
+    return "https://api-testnet.bybit.com" if testnet else "https://api.bybit.com"
+
+def bybit_price(coin, testnet=False):
+    j = requests.get(f"{_api(testnet)}/v5/market/tickers",
                      params={"category": "linear", "symbol": f"{coin}USDT"}, timeout=8).json()
     return float(j["result"]["list"][0]["lastPrice"])
 
-def pre_pump_base(coin):
+def pre_pump_base(coin, testnet=False):
     """15th percentile of lows over 14d (4h candles) — the liquidity shelf / TP."""
-    j = requests.get("https://api.bybit.com/v5/market/kline",
+    j = requests.get(f"{_api(testnet)}/v5/market/kline",
                      params={"category": "linear", "symbol": f"{coin}USDT", "interval": "240", "limit": 84},
                      timeout=8).json()
-    lows = sorted(float(c[3]) for c in j["result"]["list"])
+    rows = j.get("result", {}).get("list", [])
+    lows = sorted(float(c[3]) for c in rows)
     return lows[int(len(lows) * 0.15)] if lows else None
 
 def premium_snapshot(coin):
@@ -73,9 +77,9 @@ def ticket(coin, o, prem):
 
 def execute(coin, o, testnet):
     try:
-        import ccxt, os
+        import ccxt
     except ImportError:
-        print("\n✗ ccxt not installed.  pip install ccxt"); return
+        print("\n✗ ccxt not installed.  pip3 install --break-system-packages ccxt"); return
     import os
     key, sec = os.environ.get("BYBIT_API_KEY"), os.environ.get("BYBIT_API_SECRET")
     if not key or not sec:
@@ -83,24 +87,33 @@ def execute(coin, o, testnet):
     if o["risk"] > MAX_RISK:
         print(f"\n✗ Risk ${o['risk']:.0f} exceeds hard cap ${MAX_RISK:.0f}. Edit MAX_RISK to override."); return
 
-    print(f"\n⚠️  ABOUT TO PLACE A {'TESTNET' if testnet else 'LIVE'} ORDER:")
-    print(f"   SHORT {o['qty']:.4g} {coin} @ {o['entry']:.6g} limit | SL {o['sl']:.6g} | TP {o['tp']:.6g}")
+    ex = ccxt.bybit({"apiKey": key, "secret": sec, "options": {"defaultType": "linear"}})
+    if testnet:
+        ex.set_sandbox_mode(True)
+    sym = f"{coin}/USDT:USDT"
+    ex.load_markets()
+    # round to the exchange's precision so Bybit doesn't reject
+    qty = ex.amount_to_precision(sym, o["qty"])
+    price = ex.price_to_precision(sym, o["entry"])
+    sl = ex.price_to_precision(sym, o["sl"])
+    tp = ex.price_to_precision(sym, o["tp"])
+
+    print(f"\n⚠️  ABOUT TO PLACE A {'TESTNET (fake money)' if testnet else 'LIVE — REAL MONEY'} ORDER:")
+    print(f"   SHORT {qty} {coin} @ {price} limit | SL {sl} | TP {tp}")
     if input('   Type "CONFIRM" to place, anything else to abort: ').strip() != "CONFIRM":
         print("   Aborted — no order placed."); return
 
-    ex = ccxt.bybit({"apiKey": key, "secret": sec, "options": {"defaultType": "linear"}})
-    if testnet: ex.set_sandbox_mode(True)
-    sym = f"{coin}/USDT:USDT"
     try:
         ex.set_leverage(o["leverage"], sym)
     except Exception as e:
-        print(f"   (leverage set skipped: {str(e)[:60]})")
-    order = ex.create_order(sym, "limit", "sell", o["qty"], o["entry"], params={
-        "stopLoss": {"triggerPrice": o["sl"]},
-        "takeProfit": {"triggerPrice": o["tp"]},
-        "positionIdx": 0,
-    })
-    print(f"\n✅ Order placed: id {order.get('id')}  status {order.get('status')}")
+        print(f"   (leverage set skipped: {str(e)[:70]})")
+    try:
+        order = ex.create_order(sym, "limit", "sell", float(qty), float(price),
+                                params={"stopLoss": sl, "takeProfit": tp, "positionIdx": 0})
+        print(f"\n✅ Order placed: id {order.get('id')}  status {order.get('status')}")
+        print(f"   Check it on the exchange. Cancel/close there when done testing.")
+    except Exception as e:
+        print(f"\n✗ Order rejected: {e}")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -115,10 +128,10 @@ def main():
     a = ap.parse_args()
     coin = a.coin.upper().replace("USDT", "")
 
-    cur = bybit_price(coin)
+    cur = bybit_price(coin, a.testnet)
     entry = a.entry if a.entry else cur
-    tp = a.tp if a.tp else pre_pump_base(coin)
-    prem = premium_snapshot(coin)
+    tp = a.tp if a.tp else pre_pump_base(coin, a.testnet)
+    prem = premium_snapshot(coin) if not a.testnet else []
 
     print(f"\n{coin}: live {cur:.6g}" + (f"   (entry {entry:.6g})" if a.entry else "   (entry = current)"))
     if not tp:
