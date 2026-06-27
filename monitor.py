@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "state.json")
 WATCHLIST_FILE = os.path.join(SCRIPT_DIR, "watchlist.txt")
+PRICE_ALERTS_FILE = os.path.join(SCRIPT_DIR, "price_alerts.json")
 
 # Credentials come from env (GitHub Secrets). No hardcoded fallback — repo is public.
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -57,6 +58,34 @@ def load_watchlist():
         return set()
     with open(WATCHLIST_FILE) as f:
         return {line.strip().upper() for line in f if line.strip() and not line.startswith("#")}
+
+
+def load_price_alerts():
+    """Manual price-level alerts for active trade setups.
+    JSON list of {coin, level, direction(above|below), note}."""
+    if not os.path.exists(PRICE_ALERTS_FILE):
+        return []
+    try:
+        with open(PRICE_ALERTS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def get_price(coin):
+    """Last price for a coin. MEXC first (works from GitHub Actions), Bybit fallback."""
+    try:
+        j = requests.get(f"https://contract.mexc.com/api/v1/contract/ticker",
+                         params={"symbol": f"{coin}_USDT"}, timeout=8).json()
+        return float(j["data"]["lastPrice"])
+    except Exception:
+        pass
+    try:
+        j = requests.get("https://api.bybit.com/v5/market/tickers",
+                         params={"category": "linear", "symbol": f"{coin}USDT"}, timeout=8).json()
+        return float(j["result"]["list"][0]["lastPrice"])
+    except Exception:
+        return None
 
 
 def load_state():
@@ -315,6 +344,29 @@ def scan():
                 messages.append("\n".join(parts))
 
             state["watch"] = {f"{r['exchange']}:{r['coin']}": r["rate"] for r in all_watch}
+
+        # ── MODE 3: Manual price-level alerts (active trade setups) ──
+        price_alerts = load_price_alerts()
+        fired = state.get("price_fired", [])
+        for a in price_alerts:
+            key = f"{a['coin']}:{a['level']}:{a['direction']}"
+            if key in fired:
+                continue
+            px = get_price(a["coin"])
+            if px is None:
+                continue
+            hit = ((a["direction"] == "above" and px >= a["level"]) or
+                   (a["direction"] == "below" and px <= a["level"]))
+            if hit:
+                msg = (f"\U0001f3af <b>{a['coin']} hit {a['level']}</b>  (now {px:.5g})\n"
+                       f"  {a.get('note', '')}")
+                ctx = enrich(a["coin"])
+                if ctx:
+                    msg += "\n" + ctx
+                messages.append(msg)
+                fired.append(key)
+                log(f"Price alert fired: {key} at {px}")
+        state["price_fired"] = fired
 
         # ── Send ─────────────────────────────────────────────────
         for msg in messages:
