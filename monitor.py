@@ -20,8 +20,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "state.json")
 WATCHLIST_FILE = os.path.join(SCRIPT_DIR, "watchlist.txt")
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8928254387:AAGNfwUxrbmCQgV-Y4dxvwrPnvlCZI3hZeo")
-CHAT_ID = os.environ.get("CHAT_ID", "1323857029")
+# Credentials come from env (GitHub Secrets). No hardcoded fallback — repo is public.
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+CHAT_ID = os.environ.get("CHAT_ID", "")
 
 SCAN_LOW = -2.5
 SCAN_HIGH = -1.5
@@ -337,10 +338,31 @@ def scan():
 
 
 if __name__ == "__main__":
+    if not BOT_TOKEN or not CHAT_ID:
+        log("ERROR: BOT_TOKEN and CHAT_ID env vars are required (set them as GitHub Secrets)")
+        sys.exit(1)
+
     if "--once" in sys.argv:
         scan()
+
+    elif "--loop" in sys.argv:
+        # Duration-capped loop for GitHub Actions (job max 6h). Scans every 15min
+        # for ~5.8h then exits; the workflow's concurrency restart keeps it continuous.
+        # No startup message here — avoids spam on every restart.
+        end = time.time() + 5.8 * 3600
+        log("Loop mode: scanning every 15min for ~5.8h, then exit for restart")
+        while time.time() < end:
+            try:
+                scan()
+            except Exception as e:
+                log(f"Scan crashed: {e}")
+            if time.time() < end:
+                time.sleep(900)
+        log("Loop window complete; exiting for workflow restart")
+
     else:
-        log("Funding Alert Bot started (15min loop)")
+        # Local persistent loop (manual runs on your Mac)
+        log("Funding Alert Bot started (local 15min loop)")
         send_telegram("✅ <b>Funding Alert Bot started</b>\nScanning Coinglass every 15min")
         while True:
             try:

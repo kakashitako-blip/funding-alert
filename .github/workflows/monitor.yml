@@ -1,12 +1,20 @@
 name: Funding Rate Monitor
+
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '*/20 * * * *'   # frequent restart attempts; concurrency keeps one job running
   workflow_dispatch:
+
+# Only one monitor job runs at a time. New scheduled triggers queue and start
+# immediately after the current ~5.8h job ends → continuous 15-min scanning.
+concurrency:
+  group: funding-monitor
+  cancel-in-progress: false
 
 jobs:
   scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 350   # ~5h50m, under GitHub's 6h job cap
     steps:
       - uses: actions/checkout@v4
 
@@ -26,11 +34,11 @@ jobs:
           key: funding-state-${{ github.run_id }}
           restore-keys: funding-state-
 
-      - name: Run scan
+      - name: Run monitor (looping)
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python monitor.py --once
+        run: python monitor.py --loop
 
       - name: Save state
         if: always()
