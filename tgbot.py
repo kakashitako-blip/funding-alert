@@ -14,7 +14,7 @@ Commands (send in Telegram):
   /status              — open positions + live PnL
   /help
 """
-import os, time, json, requests
+import os, time, json, subprocess, requests
 import prepare_trade as PT          # reuse bybit_price, pre_pump_base, build
 
 TOKEN = os.environ.get("BOT_TOKEN"); CHAT = str(os.environ.get("CHAT_ID", ""))
@@ -38,7 +38,18 @@ def answer(cid, text=""):
 def load_pos():
     try: return json.load(open(POS))
     except Exception: return []
-def save_pos(p): json.dump(p, open(POS, "w"), indent=2)
+def save_pos(p):
+    json.dump(p, open(POS, "w"), indent=2)
+    _git_sync()
+
+def _git_sync():
+    """Commit + push positions.json so the cloud monitor stays in sync."""
+    try:
+        subprocess.run(["git", "-C", HERE, "add", "positions.json"], capture_output=True, timeout=20)
+        subprocess.run(["git", "-C", HERE, "commit", "-m", "tgbot: sync positions"], capture_output=True, timeout=20)
+        subprocess.run(["git", "-C", HERE, "push"], capture_output=True, timeout=30)
+    except Exception as e:
+        print("git sync:", str(e)[:60])
 
 def ticket(coin, risk):
     cur = PT.bybit_price(coin)

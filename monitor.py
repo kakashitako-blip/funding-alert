@@ -419,6 +419,15 @@ def scan():
         # ── MODE 5: Open-position exit monitor (watch coins you're IN) ──
         # Pings when an exit signal fires: premium flips flat (cover signal),
         # price reaches TP, or price nears the stop. MEXC data (works in cloud).
+        # Refresh positions.json from the repo first — tgbot pushes trades there.
+        try:
+            import subprocess
+            subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "--quiet", "origin", "main"],
+                           capture_output=True, timeout=20)
+            subprocess.run(["git", "-C", SCRIPT_DIR, "checkout", "origin/main", "--", "positions.json"],
+                           capture_output=True, timeout=20)
+        except Exception as e:
+            log(f"positions pull skipped: {str(e)[:50]}")
         positions = load_positions()
         pos_state = state.get("pos", {})
         for p in positions:
