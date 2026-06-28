@@ -1,0 +1,3 @@
+date,coin,side,entry,exit,lev,roi_pct,pnl_usd,outcome,notes
+2026-06-28,ACT,short,0.009745,0.008715,4x,+42.27,+5.25,WIN,"memecoin; shorted after 0.0108 sweep+reject; exited on premium going flat (selling done)"
+2026-06-28,POWR,short,0.05077,0.04644,4x,+34.11,+5.47,WIN,"structural stop above 0.055 pump high; held ~hours through neg funding (paid small funding); exited 0.04644 into the dump"
