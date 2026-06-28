@@ -424,7 +424,8 @@ def scan():
             import subprocess
             subprocess.run(["git", "-C", SCRIPT_DIR, "fetch", "--quiet", "origin", "main"],
                            capture_output=True, timeout=20)
-            subprocess.run(["git", "-C", SCRIPT_DIR, "checkout", "origin/main", "--", "positions.json"],
+            subprocess.run(["git", "-C", SCRIPT_DIR, "checkout", "origin/main", "--",
+                            "positions.json", "price_alerts.json"],
                            capture_output=True, timeout=20)
         except Exception as e:
             log(f"positions pull skipped: {str(e)[:50]}")
