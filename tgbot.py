@@ -51,26 +51,59 @@ def _git_sync():
     except Exception as e:
         print("git sync:", str(e)[:60])
 
-def ticket(coin, risk):
-    cur = PT.bybit_price(coin)
-    tp = PT.pre_pump_base(coin)
-    o = PT.build(coin, cur, DEFAULT_SL_PCT, tp, risk, LEV)
-    return cur, o
+pending = {}  # coin -> built order awaiting Confirm
 
-def place(coin, risk):
-    cur, o = ticket(coin, risk)
-    if o["risk"] > MAX_RISK: return None, f"risk ${o['risk']:.0f} > cap ${MAX_RISK:.0f}"
-    sym = f"{coin}/USDT:USDT"; ex.load_markets()
+def parse_kv(tokens):
+    """entry=, sl=, tp= (absolute prices) · risk= ($). Bare number = risk."""
+    d = {}
+    for tok in tokens:
+        if "=" in tok:
+            k, v = tok.split("=", 1)
+            try: d[k.lower()] = float(v)
+            except Exception: pass
+        else:
+            try: d["risk"] = float(tok)
+            except Exception: pass
+    return d
+
+def build_order(coin, args):
+    cur = PT.bybit_price(coin)
+    market = "entry" not in args
+    entry = args.get("entry", cur)
+    sl = args.get("sl", entry * (1 + DEFAULT_SL_PCT / 100))     # default 6% above
+    tp = args.get("tp")
+    if tp is None:
+        tp = PT.pre_pump_base(coin)
+    risk = min(args.get("risk", DEFAULT_RISK), MAX_RISK)
+    if sl <= entry:
+        raise ValueError("SL must be ABOVE entry for a short")
+    if not tp or tp >= entry:
+        raise ValueError("TP must be BELOW entry — pass tp=")
+    risk_frac = (sl - entry) / entry
+    qty = risk / (sl - entry)
+    return {"coin": coin, "cur": cur, "market": market, "entry": entry, "sl": sl,
+            "tp": tp, "risk": risk, "qty": qty, "notional": qty * entry,
+            "rr": ((entry - tp) / entry) / risk_frac, "sl_pct": risk_frac * 100}
+
+def place_order(o):
+    coin = o["coin"]; sym = f"{coin}/USDT:USDT"; ex.load_markets()
     qty = ex.amount_to_precision(sym, o["qty"])
     sl = ex.price_to_precision(sym, o["sl"]); tp = ex.price_to_precision(sym, o["tp"])
     try: ex.set_leverage(LEV, sym)
     except Exception: pass
-    order = ex.create_order(sym, "market", "sell", float(qty), None,
-                            params={"stopLoss": sl, "takeProfit": tp, "positionIdx": 0})
+    if o["market"]:
+        order = ex.create_order(sym, "market", "sell", float(qty), None,
+                                params={"stopLoss": sl, "takeProfit": tp, "positionIdx": 0})
+        entry_rec = o["cur"]
+    else:
+        price = ex.price_to_precision(sym, o["entry"])
+        order = ex.create_order(sym, "limit", "sell", float(qty), float(price),
+                                params={"stopLoss": sl, "takeProfit": tp, "positionIdx": 0})
+        entry_rec = o["entry"]
     pos = [p for p in load_pos() if p["coin"] != coin]
-    pos.append({"coin": coin, "side": "short", "entry": cur, "sl": o["sl"], "tp": o["tp"]})
+    pos.append({"coin": coin, "side": "short", "entry": entry_rec, "sl": o["sl"], "tp": o["tp"]})
     save_pos(pos)
-    return order, None
+    return order
 
 def close(coin):
     sym = f"{coin}/USDT:USDT"
@@ -107,34 +140,45 @@ def handle(text):
     c = pp[0].lower()
     if c in ("/short", "/s") and len(pp) >= 2:
         coin = pp[1].upper().replace("USDT", "")
-        risk = float(pp[2]) if len(pp) > 2 else DEFAULT_RISK
         try:
-            cur, o = ticket(coin, risk)
+            o = build_order(coin, parse_kv(pp[2:]))
         except Exception as e:
-            return send(f"✗ {coin}: {str(e)[:60]}")
-        msg = (f"<b>SHORT {coin}</b> @ market ~{cur:.6g}\n"
-               f"SL {o['sl']:.6g} (+{o['sl_pct']:.0f}%) · TP {o['tp']:.6g} · R {o['rr']:.2f}\n"
-               f"${o['notional']:.0f} notional · risk ${o['risk']:.0f}")
-        send(msg, kb_confirm(f"go:{coin}:{risk}"))
+            return send(f"✗ {coin}: {str(e)[:90]}")
+        pending[coin] = o
+        kind = "MARKET (fills now)" if o["market"] else f"LIMIT @ {o['entry']:.6g}"
+        msg = (f"<b>SHORT {coin}</b> · {kind}\n"
+               f"entry {o['entry']:.6g} · SL {o['sl']:.6g} (+{o['sl_pct']:.1f}%) · TP {o['tp']:.6g}\n"
+               f"R {o['rr']:.2f} · {o['qty']:.4g} {coin} (${o['notional']:.0f}) · risk ${o['risk']:.0f}")
+        send(msg, kb_confirm(f"go:{coin}"))
     elif c in ("/close", "/c") and len(pp) >= 2:
         coin = pp[1].upper().replace("USDT", "")
         send(f"Close <b>{coin}</b>?", kb_confirm(f"cl:{coin}"))
     elif c in ("/status", "/st"):
         send(status())
     else:
-        send("/short COIN [risk] · /close COIN · /status")
+        send("<b>/short COIN</b> [entry= sl= tp= risk=]\n"
+             "  e.g. <code>/short ARK</code> (all auto, market)\n"
+             "  <code>/short ARK risk=8</code>\n"
+             "  <code>/short ARK entry=0.14 sl=0.168 tp=0.10 risk=5</code>\n"
+             "  (entry omitted = market · sl/tp = prices · default sl +6%, tp = base)\n"
+             "<b>/close COIN</b> · <b>/status</b>")
 
 def handle_cb(data, cid):
     if data == "x":
         return answer(cid, "Cancelled")
     if data.startswith("go:"):
-        _, coin, risk = data.split(":")
-        answer(cid, "Placing…")
+        coin = data.split(":")[1]
+        o = pending.get(coin)
+        answer(cid, "Placing…" if o else "Expired — re-issue")
+        if not o:
+            return
         try:
-            order, err = place(coin, float(risk))
-            send(f"✗ {err}" if err else f"✅ SHORT {coin} filled (id {order.get('id')}). Now monitored for exit.")
+            order = place_order(o)
+            kind = "filled" if o["market"] else "limit placed"
+            send(f"✅ SHORT {coin} {kind} (id {order.get('id')}). Now monitored for exit.")
+            pending.pop(coin, None)
         except Exception as e:
-            send(f"✗ order rejected: {str(e)[:80]}")
+            send(f"✗ order rejected: {str(e)[:90]}")
     elif data.startswith("cl:"):
         coin = data.split(":")[1]
         answer(cid, "Closing…")
