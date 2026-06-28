@@ -170,11 +170,17 @@ def handle_cb(data, cid):
     if data == "x":
         return answer(cid, "Cancelled")
     if data.startswith("t:"):
-        # One-tap Short from a cloud alert: t:COIN:sl:tp:risk  → build market
-        # ticket and present Confirm (still a human tap before it places).
+        # One-tap Short from a cloud alert. Either form:
+        #   t:COIN                  → all auto (market, structural SL, base TP, $5)
+        #   t:COIN:sl:tp:risk       → explicit levels from the alert
+        # Builds the ticket and presents Confirm (human tap before it places).
+        bits = data.split(":")
+        coin = bits[1]
+        args = {}
+        if len(bits) >= 5:
+            args = {"sl": float(bits[2]), "tp": float(bits[3]), "risk": float(bits[4])}
         try:
-            _, coin, sl, tp, risk = data.split(":")
-            o = build_order(coin, {"sl": float(sl), "tp": float(tp), "risk": float(risk)})
+            o = build_order(coin, args)
         except Exception as e:
             return answer(cid, f"setup failed: {str(e)[:40]}")
         answer(cid, "Ticket ready")

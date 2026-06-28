@@ -344,6 +344,7 @@ def scan():
 
         if scan_new or scan_gone:
             parts = []
+            scan_btns = []
             if scan_new:
                 parts.append("\U0001f534 <b>Entered -1.5% to -2.5% zone</b>")
                 for a in scan_new:
@@ -351,12 +352,19 @@ def scan():
                 for coin in dict.fromkeys(a["coin"] for a in scan_new):
                     parts.append(enrich(coin))
                     parts.append(trade_cmd(coin, get_price(coin)))
+                    # one-tap Short (all-auto: market, structural SL, base TP, $5)
+                    scan_btns.append([{"text": f"\U0001f4c9 Short {coin} (confirm next)",
+                                       "callback_data": f"t:{coin}"}])
             if scan_gone:
                 for g in scan_gone:
                     emoji = "\U0001f53b" if g["direction"] == "deeper" else "✅"
                     parts.append(f"{emoji} <b>{g['coin']}</b> {g['exchange']} left zone ({g['direction']}, now {g['rate']:.2f}%)")
             parts.append(f"\n\U0001f4ca {now.strftime('%H:%M UTC')}")
-            messages.append("\n".join(parts))
+            # Send scan alerts standalone so the Short buttons attach; else batch.
+            if scan_btns:
+                send_telegram("\n".join(parts), buttons=scan_btns)
+            else:
+                messages.append("\n".join(parts))
 
         state["scan"] = {f"{r['exchange']}:{r['coin']}": r["rate"] for r in in_zone}
 
