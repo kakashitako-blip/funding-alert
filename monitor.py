@@ -20,6 +20,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_FILE = os.path.join(SCRIPT_DIR, "state.json")
 WATCHLIST_FILE = os.path.join(SCRIPT_DIR, "watchlist.txt")
 PRICE_ALERTS_FILE = os.path.join(SCRIPT_DIR, "price_alerts.json")
+POSITIONS_FILE = os.path.join(SCRIPT_DIR, "positions.json")
 
 # Credentials come from env (GitHub Secrets). No hardcoded fallback — repo is public.
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -71,6 +72,32 @@ def load_price_alerts():
             return json.load(f)
     except Exception:
         return []
+
+
+def load_positions():
+    """Open positions to monitor for exit signals.
+    JSON list of {coin, side, entry, sl, tp}."""
+    if not os.path.exists(POSITIONS_FILE):
+        return []
+    try:
+        with open(POSITIONS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def mexc_premium_price(coin):
+    """(premium%, price) from MEXC ticker — works from GitHub Actions."""
+    try:
+        t = requests.get("https://contract.mexc.com/api/v1/contract/ticker",
+                         params={"symbol": f"{coin}_USDT"}, timeout=8).json().get("data", {})
+        price = float(t.get("lastPrice") or 0)
+        fair = float(t.get("fairPrice") or 0)
+        idx = float(t.get("indexPrice") or 0)
+        prem = (fair - idx) / idx * 100 if idx else None
+        return prem, price
+    except Exception:
+        return None, None
 
 
 def get_price(coin):
@@ -389,8 +416,43 @@ def scan():
                 log(f"Price alert fired: {key} at {px}")
         state["price_fired"] = fired
 
-        # (Premium early-warning scan removed — too noisy. Funding-zone + price
-        # alerts only. Use premium.py / status.py locally for the premium read.)
+        # ── MODE 5: Open-position exit monitor (watch coins you're IN) ──
+        # Pings when an exit signal fires: premium flips flat (cover signal),
+        # price reaches TP, or price nears the stop. MEXC data (works in cloud).
+        positions = load_positions()
+        pos_state = state.get("pos", {})
+        for p in positions:
+            coin = p["coin"]
+            ps = pos_state.get(coin, {})
+            prem, px = mexc_premium_price(coin)
+            if px is None:
+                continue
+            entry, sl, tp = p.get("entry"), p.get("sl"), p.get("tp")
+            pnl = ((entry - px) / entry * 100) if entry else 0   # short PnL
+            alerts = []
+            # 1) premium flipped flat after being deep = selling done -> cover
+            if prem is not None:
+                if prem <= -1.5:
+                    ps["was_deep"] = True
+                if ps.get("was_deep") and prem >= -0.3 and not ps.get("cover_fired"):
+                    alerts.append(f"\U0001f7e2 <b>COVER signal</b> — premium flipped flat ({prem:+.2f}%). Selling looks done.")
+                    ps["cover_fired"] = True
+            # 2) reached TP
+            if tp and px <= tp and not ps.get("tp_fired"):
+                alerts.append(f"\U0001f3af <b>TP hit</b> ({tp}). Take profit.")
+                ps["tp_fired"] = True
+            # 3) nearing stop (within 2%)
+            if sl and px >= sl * 0.98 and not ps.get("sl_fired"):
+                alerts.append(f"⚠️ <b>Nearing STOP</b> ({sl}). Squeeze risk.")
+                ps["sl_fired"] = True
+            if alerts:
+                head = f"\U0001f4c2 <b>{coin}</b> {p.get('side','short')} | now {px:.5g} | PnL {pnl:+.1f}%"
+                pm = f"  premium {prem:+.2f}% (MEXC)" if prem is not None else ""
+                messages.append(head + "\n" + pm + "\n" + "\n".join("  " + a for a in alerts))
+                log(f"Position alert {coin}: {[a[:30] for a in alerts]}")
+            pos_state[coin] = ps
+        # drop state for coins no longer held
+        state["pos"] = {c: pos_state[c] for c in pos_state if any(p["coin"] == c for p in positions)}
 
         # ── Send ─────────────────────────────────────────────────
         for msg in messages:
