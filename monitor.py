@@ -234,6 +234,40 @@ def scrape_coin_funding(page, coin):
     return results
 
 
+def firecrawl_lowest_funding():
+    """Scrape the 'Lowest Funding Rate' box via Firecrawl REST API — no browser.
+    Returns the same shape as scrape_lowest_funding(), or None to trigger the
+    Playwright fallback (missing key, request error, or unparseable page)."""
+    key = os.environ.get("FIRECRAWL_API_KEY")
+    if not key:
+        return None
+    try:
+        r = requests.post(
+            "https://api.firecrawl.dev/v2/scrape",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"url": "https://www.coinglass.com/FundingRate",
+                  "formats": ["markdown"], "onlyMainContent": True,
+                  "waitFor": 8000, "proxy": "auto"},
+            timeout=60,
+        )
+        j = r.json()
+        md = (j.get("data") or j).get("markdown", "") or ""
+    except Exception as e:
+        log(f"Firecrawl error: {str(e)[:70]}")
+        return None
+    if "Lowest Funding Rate" not in md:
+        return None
+    section = md[md.find("Lowest Funding Rate"):]
+    end = section.find("USDT or USD")        # box ends right before the table
+    if end > 0:
+        section = section[:end]
+    results = []
+    for m in re.finditer(r"\[(\w+)\s+([A-Za-z0-9]+)/USDT[\\\s]*?(-?\d+\.\d+)%\]", section):
+        results.append({"coin": m.group(2), "exchange": m.group(1),
+                        "pair": f"{m.group(2)}/USDT", "rate": float(m.group(3))})
+    return results or None
+
+
 # ── Entry-data enrichment (order flow + heatmap deep-links) ──────
 
 def enrich(coin):
@@ -314,13 +348,20 @@ def scan():
     watchlist = load_watchlist()
     log(f"Watchlist: {watchlist or 'empty'}")
 
-    pw, browser, ctx = get_browser()
-    page = ctx.new_page()
+    # ── MODE 1: lowest-funding box — Firecrawl first (no browser), Playwright fallback ──
+    lowest = firecrawl_lowest_funding()
+    src = "Firecrawl" if lowest is not None else None
+    pw = browser = ctx = page = None
+    if lowest is None or watchlist:           # browser only if FC failed or watchlist needs per-coin pages
+        pw, browser, ctx = get_browser()
+        page = ctx.new_page()
+        if lowest is None:
+            lowest = scrape_lowest_funding(page)
+            src = "Playwright fallback"
+    lowest = lowest or []
 
     try:
-        # ── MODE 1: Scan lowest funding rates ────────────────────
-        lowest = scrape_lowest_funding(page)
-        log(f"Lowest funding: {len(lowest)} entries")
+        log(f"Lowest funding: {len(lowest)} entries via {src}")
         for item in lowest:
             log(f"  {item['coin']} {item['exchange']}: {item['rate']}%")
 
@@ -501,8 +542,10 @@ def scan():
         log("Scan complete")
 
     finally:
-        browser.close()
-        pw.stop()
+        if browser:
+            browser.close()
+        if pw:
+            pw.stop()
 
 
 if __name__ == "__main__":
