@@ -389,40 +389,8 @@ def scan():
                 log(f"Price alert fired: {key} at {px}")
         state["price_fired"] = fired
 
-        # ── MODE 4: Premium early-warning (real-time pressure, leads funding) ──
-        # One MEXC bulk-ticker call gives premium for ~all coins. Premium moves
-        # BEFORE funding settles, so this flags distribution early. It is a
-        # HEADS-UP, not an entry trigger (premium-entry backtests get chopped).
-        try:
-            bulk = requests.get("https://contract.mexc.com/api/v1/contract/ticker",
-                                timeout=12).json().get("data", [])
-            prem_hits = []
-            for t in bulk:
-                s = t.get("symbol", "")
-                if not s.endswith("_USDT"):
-                    continue
-                fair = float(t.get("fairPrice") or 0)
-                idx = float(t.get("indexPrice") or 0)
-                if not idx:
-                    continue
-                prem = (fair - idx) / idx * 100
-                if prem <= PREMIUM_ALERT:
-                    prem_hits.append((s.replace("_USDT", ""), prem, float(t.get("fundingRate") or 0) * 100))
-            prev_prem = state.get("premium_fired", {})
-            new_hits = sorted([h for h in prem_hits if h[0] not in prev_prem], key=lambda x: x[1])
-            if new_hits:
-                parts = ["⚡ <b>Early pressure (premium)</b> — watch, don't chase"]
-                for coin, prem, fund in new_hits:
-                    parts.append(f"  <b>{coin}</b>  premium <b>{prem:.2f}%</b> | funding {fund:.2f}%")
-                for coin, _, _ in new_hits[:2]:
-                    parts.append(enrich(coin))
-                parts.append("\n⏰ wait for a lower-high bounce + 1h rejection to enter")
-                messages.append("\n".join(parts))
-                log(f"Premium early-warning: {[h[0] for h in new_hits]}")
-            # remember currently-hot coins; ones that recover drop out and can re-fire later
-            state["premium_fired"] = {h[0]: round(h[1], 2) for h in prem_hits}
-        except Exception as e:
-            log(f"Premium scan error: {e}")
+        # (Premium early-warning scan removed — too noisy. Funding-zone + price
+        # alerts only. Use premium.py / status.py locally for the premium read.)
 
         # ── Send ─────────────────────────────────────────────────
         for msg in messages:
