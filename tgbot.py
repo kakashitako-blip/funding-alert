@@ -77,8 +77,14 @@ def status():
     if not ps: return "No open positions."
     out = ["<b>Open positions</b>"]
     for p in ps:
-        pnl = p.get("percentage") or 0
-        out.append(f"  {p['symbol'].split('/')[0]} {p['side']} | PnL {pnl:+.1f}% | mark {p.get('markPrice')}")
+        coin = p["symbol"].split("/")[0]
+        upnl = float(p.get("unrealizedPnl") or 0)
+        im = float(p.get("initialMargin") or p.get("collateral") or 0)
+        entry = float(p.get("entryPrice") or 0)
+        mark = float(p.get("markPrice") or 0)
+        roi = (upnl / im * 100) if im else 0
+        emoji = "🟢" if upnl >= 0 else "🔴"
+        out.append(f"  {emoji} {coin} {p['side']} | {upnl:+.2f} USDT ({roi:+.1f}% ROI) | entry {entry:.6g} mark {mark:.6g}")
     return "\n".join(out)
 
 def kb_confirm(action): return {"inline_keyboard": [[
