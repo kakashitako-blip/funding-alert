@@ -75,7 +75,7 @@ def ticket(coin, o, prem):
         print(f"  Most selling: {worst[0]} ({worst[1]:+.2f}%)")
     print(f"{'='*46}")
 
-def execute(coin, o, testnet):
+def execute(coin, o, testnet, market=False):
     try:
         import ccxt
     except ImportError:
@@ -98,8 +98,9 @@ def execute(coin, o, testnet):
     sl = ex.price_to_precision(sym, o["sl"])
     tp = ex.price_to_precision(sym, o["tp"])
 
+    kind = "MARKET (fills now)" if market else f"@ {price} limit"
     print(f"\n⚠️  ABOUT TO PLACE A {'TESTNET (fake money)' if testnet else 'LIVE — REAL MONEY'} ORDER:")
-    print(f"   SHORT {qty} {coin} @ {price} limit | SL {sl} | TP {tp}")
+    print(f"   SHORT {qty} {coin} {kind} | SL {sl} | TP {tp}")
     if input('   Type "CONFIRM" to place, anything else to abort: ').strip() != "CONFIRM":
         print("   Aborted — no order placed."); return
 
@@ -108,10 +109,14 @@ def execute(coin, o, testnet):
     except Exception as e:
         print(f"   (leverage set skipped: {str(e)[:70]})")
     try:
-        order = ex.create_order(sym, "limit", "sell", float(qty), float(price),
-                                params={"stopLoss": sl, "takeProfit": tp, "positionIdx": 0})
+        if market:
+            order = ex.create_order(sym, "market", "sell", float(qty), None,
+                                    params={"stopLoss": sl, "takeProfit": tp, "positionIdx": 0})
+        else:
+            order = ex.create_order(sym, "limit", "sell", float(qty), float(price),
+                                    params={"stopLoss": sl, "takeProfit": tp, "positionIdx": 0})
         print(f"\n✅ Order placed: id {order.get('id')}  status {order.get('status')}")
-        print(f"   Check it on the exchange. Cancel/close there when done testing.")
+        print(f"   {'Filled at market — check your position + SL/TP on Bybit.' if market else 'Resting limit — check on Bybit.'}")
     except Exception as e:
         print(f"\n✗ Order rejected: {e}")
 
@@ -125,22 +130,25 @@ def main():
     ap.add_argument("--leverage", type=int, default=DEFAULT_LEVERAGE)
     ap.add_argument("--execute", action="store_true")
     ap.add_argument("--testnet", action="store_true")
+    ap.add_argument("--market", action="store_true", help="fill NOW at market (no waiting for a limit to fill)")
     a = ap.parse_args()
     coin = a.coin.upper().replace("USDT", "")
 
     cur = bybit_price(coin, a.testnet)
-    entry = a.entry if a.entry else cur
+    # --market always fills at current price, so size off current (ignore --entry)
+    entry = cur if a.market else (a.entry if a.entry else cur)
     tp = a.tp if a.tp else pre_pump_base(coin, a.testnet)
     prem = premium_snapshot(coin) if not a.testnet else []
 
-    print(f"\n{coin}: live {cur:.6g}" + (f"   (entry {entry:.6g})" if a.entry else "   (entry = current)"))
+    tag = "MARKET — fills now" if a.market else (f"entry {entry:.6g}" if a.entry else "entry = current")
+    print(f"\n{coin}: live {cur:.6g}   ({tag})")
     if not tp:
         print("✗ couldn't compute TP — pass --tp"); return
     o = build(coin, entry, a.sl_pct, tp, a.risk, a.leverage)
     ticket(coin, o, prem)
 
     if a.execute:
-        execute(coin, o, a.testnet)
+        execute(coin, o, a.testnet, a.market)
     else:
         flags = f"--entry {entry:.6g} --tp {tp:.6g}"
         print(f"\n[DRY RUN] to place:  python prepare_trade.py {coin} {flags} --execute")
