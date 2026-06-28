@@ -70,7 +70,10 @@ def build_order(coin, args):
     cur = PT.bybit_price(coin)
     market = "entry" not in args
     entry = args.get("entry", cur)
-    sl = args.get("sl", entry * (1 + DEFAULT_SL_PCT / 100))     # default 6% above
+    sl = args.get("sl")
+    if sl is None:                                # structural: just above the swept high
+        rh = PT.recent_high(coin)
+        sl = (rh * 1.02) if rh else entry * (1 + DEFAULT_SL_PCT / 100)
     tp = args.get("tp")
     if tp is None:
         tp = PT.pre_pump_base(coin)

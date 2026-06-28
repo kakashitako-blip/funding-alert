@@ -34,6 +34,14 @@ def pre_pump_base(coin, testnet=False):
     lows = sorted(float(c[3]) for c in rows)
     return lows[int(len(lows) * 0.15)] if lows else None
 
+def recent_high(coin, testnet=False, hours=48):
+    """Highest high over the recent window (the swept pump high). Structural stop sits just above it."""
+    j = requests.get(f"{_api(testnet)}/v5/market/kline",
+                     params={"category": "linear", "symbol": f"{coin}USDT", "interval": "60", "limit": hours},
+                     timeout=8).json()
+    rows = j.get("result", {}).get("list", [])
+    return max(float(c[2]) for c in rows) if rows else None
+
 def premium_snapshot(coin):
     try:
         import premium as P
@@ -125,7 +133,8 @@ def main():
     ap.add_argument("coin")
     ap.add_argument("--entry", type=float, help="limit entry (default: current price)")
     ap.add_argument("--tp", type=float, help="take profit (default: pre-pump base)")
-    ap.add_argument("--sl-pct", type=float, default=DEFAULT_SL_PCT)
+    ap.add_argument("--sl", type=float, help="absolute stop price")
+    ap.add_argument("--sl-pct", type=float, help="stop as %% above entry (default: structural, just above recent high)")
     ap.add_argument("--risk", type=float, default=100.0)
     ap.add_argument("--leverage", type=int, default=DEFAULT_LEVERAGE)
     ap.add_argument("--execute", action="store_true")
@@ -140,11 +149,20 @@ def main():
     tp = a.tp if a.tp else pre_pump_base(coin, a.testnet)
     prem = premium_snapshot(coin) if not a.testnet else []
 
+    # Stop: explicit --sl price > --sl-pct > structural (just above recent high)
+    if a.sl:
+        sl_pct = (a.sl - entry) / entry * 100
+    elif a.sl_pct is not None:
+        sl_pct = a.sl_pct
+    else:
+        rh = recent_high(coin, a.testnet)
+        sl_pct = ((rh * 1.02 - entry) / entry * 100) if rh else DEFAULT_SL_PCT
+
     tag = "MARKET — fills now" if a.market else (f"entry {entry:.6g}" if a.entry else "entry = current")
-    print(f"\n{coin}: live {cur:.6g}   ({tag})")
+    print(f"\n{coin}: live {cur:.6g}   ({tag})   stop {sl_pct:+.1f}% (structural)")
     if not tp:
         print("✗ couldn't compute TP — pass --tp"); return
-    o = build(coin, entry, a.sl_pct, tp, a.risk, a.leverage)
+    o = build(coin, entry, sl_pct, tp, a.risk, a.leverage)
     ticket(coin, o, prem)
 
     if a.execute:
