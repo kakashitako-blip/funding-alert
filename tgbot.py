@@ -169,6 +169,20 @@ def handle(text):
 def handle_cb(data, cid):
     if data == "x":
         return answer(cid, "Cancelled")
+    if data.startswith("t:"):
+        # One-tap Short from a cloud alert: t:COIN:sl:tp:risk  → build market
+        # ticket and present Confirm (still a human tap before it places).
+        try:
+            _, coin, sl, tp, risk = data.split(":")
+            o = build_order(coin, {"sl": float(sl), "tp": float(tp), "risk": float(risk)})
+        except Exception as e:
+            return answer(cid, f"setup failed: {str(e)[:40]}")
+        answer(cid, "Ticket ready")
+        pending[coin] = o
+        msg = (f"<b>SHORT {coin}</b> · MARKET (fills now)\n"
+               f"entry ~{o['entry']:.6g} · SL {o['sl']:.6g} (+{o['sl_pct']:.1f}%) · TP {o['tp']:.6g}\n"
+               f"R {o['rr']:.2f} · {o['qty']:.4g} {coin} (${o['notional']:.0f}) · risk ${o['risk']:.0f}")
+        return send(msg, kb_confirm(f"go:{coin}"))
     if data.startswith("go:"):
         coin = data.split(":")[1]
         o = pending.get(coin)

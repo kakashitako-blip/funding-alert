@@ -1,3 +1,3 @@
 [
-  {"coin": "ACT", "level": 0.0114, "direction": "below", "note": "🔻 Breakdown trigger — ACT broke the consolidation low. ONLY short if premium re-deepens below -5% (on-chain spot was balanced, so needs conviction). Entry ~0.0114, SL 0.0121 (above 0.01186 liq), TP 0.0085 base. R~4. Partial at 0.0101."}
+  {"coin": "ACT", "level": 0.0114, "direction": "below", "sl": 0.0121, "tp": 0.0085, "risk": 5, "note": "🔻 Breakdown trigger. ONLY short if premium re-deepens below -5% (on-chain spot was balanced). Market in, SL 0.0121, TP 0.0085 base. R~4. Partial at 0.0101."}
 ]

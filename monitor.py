@@ -37,16 +37,19 @@ def log(msg):
     print(f"[{ts}] {msg}", flush=True)
 
 
-def send_telegram(message):
+def send_telegram(message, buttons=None):
     try:
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }
+        if buttons:                      # inline keyboard: [[{text, callback_data}], ...]
+            payload["reply_markup"] = json.dumps({"inline_keyboard": buttons})
         r = requests.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": CHAT_ID,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
+            json=payload,
             timeout=10,
         )
         return r.json().get("ok", False)
@@ -410,8 +413,17 @@ def scan():
                 ctx = enrich(a["coin"])
                 if ctx:
                     msg += "\n" + ctx
-                msg += trade_cmd(a["coin"], a["level"])
-                messages.append(msg)
+                # If the alert carries a full trade setup, attach a one-tap Short
+                # button (tgbot shows the ticket to Confirm). Else fall back to the
+                # copy-paste command and batch it with the other messages.
+                if a.get("sl") and a.get("tp"):
+                    risk = a.get("risk", 5)
+                    cb = f"t:{a['coin']}:{a['sl']:g}:{a['tp']:g}:{risk:g}"
+                    btn = [[{"text": f"\U0001f4c9 Short {a['coin']} (confirm next)", "callback_data": cb}]]
+                    send_telegram(msg, buttons=btn)
+                else:
+                    msg += trade_cmd(a["coin"], a["level"])
+                    messages.append(msg)
                 fired.append(key)
                 log(f"Price alert fired: {key} at {px}")
         state["price_fired"] = fired
