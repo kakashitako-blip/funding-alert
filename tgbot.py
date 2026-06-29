@@ -158,6 +158,13 @@ def handle(text):
         send(f"Close <b>{coin}</b>?", kb_confirm(f"cl:{coin}"))
     elif c in ("/status", "/st"):
         send(status())
+    elif c == "/stopauto":
+        open(os.path.join(HERE, "STOP_AUTO"), "w").close()
+        send("🛑 <b>Auto-trader will pause</b> within ~1 min. Open positions keep their SL/TP. /startauto to resume.")
+    elif c == "/startauto":
+        kp = os.path.join(HERE, "STOP_AUTO")
+        if os.path.exists(kp): os.remove(kp)
+        send("▶️ <b>Auto-trader resumed.</b> (If it was fully stopped, run <code>bash run_auto.sh</code>.)")
     else:
         send("<b>/short COIN</b> [entry= sl= tp= risk=]\n"
              "  e.g. <code>/short ARK</code> (all auto, market)\n"
