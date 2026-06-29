@@ -17,6 +17,7 @@ Exit rules tested head-to-head from the same entry/stop:
 All rules share the same hard stop (squeeze protection).
 """
 import requests, statistics, time, sys
+from datetime import datetime, timezone
 
 BYBIT = "https://api.bybit.com"
 LEV = 4
@@ -56,7 +57,7 @@ def series(coin):
     for t in ts:
         ix = float(I[t][4])
         prem = ((float(M[t][4]) - ix) / ix * 100) if ix > 0 else None
-        bars.append({"h":float(P[t][2]),"l":float(P[t][3]),"c":float(P[t][4]),"prem":prem})
+        bars.append({"t":t,"h":float(P[t][2]),"l":float(P[t][3]),"c":float(P[t][4]),"prem":prem})
     return bars
 
 def simulate(bars, i, entry, stop, tp):
@@ -96,14 +97,18 @@ def backtest(coin):
         rh = max(x["h"] for x in bars[i-LOOK:i+1])
         rl = min(x["l"] for x in bars[i-LOOK:i+1])
         pumped = rl > 0 and (rh / rl) >= 1.20          # REQUIRED: 20%+ pump in window
-        # entry: 20%+ pump + negative funding (premium <=-1%) + price still near the high (fade)
-        if pumped and b["prem"] <= -1.0 and prev["prem"] > -1.0 and b["c"] >= rh*0.85:
-            entry, stop = b["c"], rh*1.02
+        near_peak = b["c"] >= rh*0.93                  # within ~7% of the peak (the fade, NOT 15% down)
+        rejecting = b["c"] < bars[i-1]["c"]            # price turning down (rejection)
+        long_high = max(x["h"] for x in bars[max(0, i-672):i+1])   # ~7-day high
+        primary = rh >= long_high * 0.97               # THIS pump is the dominant peak, not a lower 2nd bounce
+        # entry: FIRST/primary 20%+ pump + funding negative + near the peak + rejecting
+        if pumped and primary and b["prem"] <= -1.0 and near_peak and rejecting:
+            entry = b["c"]; stop = entry * 1.20          # USER'S RULE: 20% above entry (wide), not tight structural
             lows = sorted(x["l"] for x in bars[i-LOOK:i])
             tp = lows[int(len(lows)*0.15)]
             if tp < entry:
                 e = simulate(bars, i, entry, stop, tp)
-                e["coin"] = coin; e["pump"] = (rh/rl - 1)*100; e["eprem"] = b["prem"]
+                e["coin"] = coin; e["pump"] = (rh/rl - 1)*100; e["eprem"] = b["prem"]; e["t"] = bars[i]["t"]
                 ev.append(e)
                 i += 96; continue
         i += 1
@@ -158,9 +163,10 @@ if __name__ == "__main__":
         allev.extend(ev)
     print(f"\n{'='*64}\n{len(allev)} pump-fade events (20%+ pump + neg funding) across {len(coins)} coins\n{'='*64}")
     if not allev: sys.exit()
-    print("events tested (coin | pump size | entry premium):")
+    print("events (coin | fade time UTC = just after pump peak | pump | premium | entry px):")
     for e in sorted(allev, key=lambda x: -x.get("pump", 0)):
-        print(f"   {e['coin']:9} +{e.get('pump',0):4.0f}% pump | prem {e.get('eprem',0):+.2f}%")
+        dt = datetime.fromtimestamp(e["t"]/1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+        print(f"   {e['coin']:9} {dt} | +{e.get('pump',0):4.0f}% pump | prem {e.get('eprem',0):+.2f}% | entry {e['entry']:.6g}")
     print()
     print(f"{'rule':11} {'n':>3} {'win%':>5} {'avgROI':>8} {'medROI':>8} {'stop':>5} {'totalROI':>9}")
     scored = []
