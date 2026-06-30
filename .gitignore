@@ -3,3 +3,5 @@ state.json
 __pycache__/
 FIRECRAWL_API_KEY
 auto_state.json
+bt_events.json
+bt_universe.json
