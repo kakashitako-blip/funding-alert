@@ -247,7 +247,7 @@ def firecrawl_lowest_funding():
             headers={"Authorization": f"Bearer {key}"},
             json={"url": "https://www.coinglass.com/FundingRate",
                   "formats": ["markdown"], "onlyMainContent": True,
-                  "waitFor": 8000, "proxy": "auto"},
+                  "waitFor": 8000, "proxy": "auto", "maxAge": 0},   # maxAge 0 = always FRESH (no stale cache)
             timeout=60,
         )
         j = r.json()

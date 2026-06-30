@@ -90,7 +90,7 @@ def candidates():
         md = (requests.post("https://api.firecrawl.dev/v2/scrape",
               headers={"Authorization": f"Bearer {FCKEY}"},
               json={"url": "https://www.coinglass.com/FundingRate", "formats": ["markdown"],
-                    "onlyMainContent": True, "waitFor": 8000, "proxy": "auto"}, timeout=60)
+                    "onlyMainContent": True, "waitFor": 8000, "proxy": "auto", "maxAge": 0}, timeout=60)
               .json().get("data", {}) or {}).get("markdown", "") or ""
     except Exception as e:
         log(f"candidates fetch failed: {str(e)[:50]}"); return []
