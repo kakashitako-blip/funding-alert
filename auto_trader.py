@@ -147,9 +147,54 @@ def place(coin, sig, dry):
     json.dump(pos, open(POS, "w"), indent=2); git_sync()
     return "✅ " + line
 
+def log_trade(p, exitpx, pnl):
+    import csv
+    entry = p.get("entry") or 0
+    roi = ((entry - exitpx) / entry * 100 * LEV) if entry and exitpx else 0
+    row = [datetime.now(timezone.utc).strftime("%Y-%m-%d"), p["coin"], "short", f"{entry:.6g}",
+           f"{exitpx:.6g}", f"{LEV}x", f"{roi:+.2f}", f"{pnl:+.2f}",
+           "WIN" if pnl >= 0 else "LOSS", "auto"]
+    try:
+        with open(os.path.join(HERE, "trades.csv"), "a", newline="") as f:
+            csv.writer(f).writerow(row)
+    except Exception: pass
+
+def check_exits():
+    """Detect auto-positions that closed (TP or SL), report P&L, log, and clean up."""
+    try:
+        open_now = {pp["symbol"].split("/")[0] for pp in ex.fetch_positions(params={"settleCoin": "USDT"}) if pp.get("contracts")}
+    except Exception:
+        return
+    try: tracked = json.load(open(POS))
+    except Exception: tracked = []
+    still, changed = [], False
+    for p in tracked:
+        coin = p["coin"]
+        if coin in open_now or not p.get("auto"):
+            still.append(p); continue           # still open, or a manual position (leave it)
+        changed = True
+        pnl = exitpx = None
+        try:
+            lst = ex.private_get_v5_position_closed_pnl(
+                {"category": "linear", "symbol": coin + "USDT", "limit": 1}).get("result", {}).get("list", [])
+            if lst:
+                pnl = float(lst[0].get("closedPnl") or 0); exitpx = float(lst[0].get("avgExitPrice") or 0)
+        except Exception: pass
+        if pnl is not None:
+            entry = p.get("entry") or 0
+            roi = ((entry - exitpx) / entry * 100 * LEV) if entry and exitpx else 0
+            tag = "🎯 <b>TP HIT</b>" if pnl >= 0 else "🛑 <b>STOP HIT</b>"
+            tg(f"{tag} — {coin} closed | <b>{pnl:+.2f} USDT</b> ({roi:+.0f}% ROI) | exit {exitpx:.6g}")
+            log_trade(p, exitpx, pnl); log(f"{coin} closed {pnl:+.2f} USDT")
+        else:
+            tg(f"ℹ️ <b>{coin}</b> auto-position closed (P&L lookup failed — check /status)")
+    if changed:
+        json.dump(still, open(POS, "w"), indent=2); git_sync()
+
 def scan(dry=False):
     if os.path.exists(KILL):
         log("KILL switch present — halted"); tg("🛑 <b>auto-trader halted</b> (STOP_AUTO file present)"); return
+    if not dry: check_exits()                    # report TP/SL closes before scanning for new entries
     st = load_state()
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     if st.get("day") != today: st = {"day": today, "new": 0}
