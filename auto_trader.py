@@ -30,7 +30,7 @@ POS = os.path.join(HERE, "positions.json"); STATE = os.path.join(HERE, "auto_sta
 KILL = os.path.join(HERE, "STOP_AUTO")
 
 RISK, STOP_PCT, TP_PCT, LEV = 5.0, 20.0, 12.0, 4
-MAX_CONCURRENT, MAX_NEW_PER_DAY, SCAN_EVERY = 2, 4, 900
+MAX_CONCURRENT, MAX_NEW_PER_DAY, SCAN_EVERY = 2, 4, 300   # 5-min scan: catch fast rejections
 LOOK, LONG = 288, 672          # 3-day and 7-day windows (15m bars)
 
 ex = ccxt.bybit({"apiKey": KEY, "secret": SEC, "options": {"defaultType": "linear"}})
@@ -79,30 +79,28 @@ def entry_signal(bars):
     if rh < long_high * 0.97: return None                      # primary pump (not 2nd bounce)
     if b["c"] < rh * 0.93: return None                         # near the peak
     if b["c"] >= prev["c"]: return None                        # rejecting (turning down)
-    if b["prem"] > -1.0: return None                           # negative funding
+    if b["prem"] > 0: return None                              # anti-squeeze: skip if perp at a PREMIUM (funding gate already passed via candidate)
     return {"entry": b["c"], "pump": (rh / rl - 1) * 100, "prem": b["prem"]}
 
 def candidates():
-    """Coins currently at deep negative funding (Coinglass Lowest Funding box via Firecrawl)."""
-    if not FCKEY: return []
+    """Bybit perps at deep negative FUNDING (direct from Bybit tickers — free, fresh,
+    Bybit-specific since we trade Bybit). Funding is the real signal, not premium."""
     try:
-        import re
-        md = (requests.post("https://api.firecrawl.dev/v2/scrape",
-              headers={"Authorization": f"Bearer {FCKEY}"},
-              json={"url": "https://www.coinglass.com/FundingRate", "formats": ["markdown"],
-                    "onlyMainContent": True, "waitFor": 8000, "proxy": "auto", "maxAge": 0}, timeout=60)
-              .json().get("data", {}) or {}).get("markdown", "") or ""
+        rows = requests.get("https://api.bybit.com/v5/market/tickers",
+                            params={"category": "linear"}, timeout=15).json().get("result", {}).get("list", [])
     except Exception as e:
         log(f"candidates fetch failed: {str(e)[:50]}"); return []
-    if "Lowest Funding Rate" not in md: return []
-    sec = md[md.find("Lowest Funding Rate"):]
-    end = sec.find("USDT or USD");  sec = sec[:end] if end > 0 else sec
-    seen, out = set(), []
-    for m in re.finditer(r"\[(\w+)\s+([A-Za-z0-9]+)/USDT[\\\s]*?(-?\d+\.\d+)%\]", sec):
-        coin, rate = m.group(2), float(m.group(3))
-        if rate <= -1.0 and coin not in seen:
-            seen.add(coin); out.append(coin)
-    return out
+    out = []
+    for t in rows:
+        sym = t.get("symbol", ""); fr = t.get("fundingRate")
+        if sym.endswith("USDT") and fr:
+            try:
+                if float(fr) <= -0.01:                 # funding <= -1%
+                    out.append((sym[:-4], float(fr) * 100))
+            except Exception:
+                pass
+    out.sort(key=lambda x: x[1])                       # most negative first
+    return [c for c, _ in out]
 
 def held_coins():
     try:
