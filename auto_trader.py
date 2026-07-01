@@ -126,9 +126,13 @@ NANSEN_CHAINS = {"Ethereum": "ethereum", "Solana": "solana", "BNB Smart Chain": 
 CG_TO_NANSEN = {"ethereum": "ethereum", "solana": "solana", "base": "base", "arbitrum-one": "arbitrum",
                 "binance-smart-chain": "bnb", "polygon-pos": "polygon", "avalanche": "avalanche"}
 CHAIN_ORDER = ["ethereum", "solana", "bnb", "base", "arbitrum", "polygon", "avalanche", "optimism"]
+CMC_TO_NANSEN = {"Ethereum": "ethereum", "BNB Smart Chain (BEP20)": "bnb", "Solana": "solana",
+                 "Polygon": "polygon", "Base": "base", "Arbitrum": "arbitrum",
+                 "Avalanche C-Chain": "avalanche", "Optimism": "optimism"}
 
 def _resolve_contract(coin):
-    """Bybit coin-info (exact ticker, best for spot-listed incl. ticker mismatches) -> CoinGecko fallback (perp-only coins)."""
+    """Resolve Bybit ticker -> (nansen_chain, contract). Bybit coin-info (free, exact ticker) ->
+    CoinMarketCap (reliable symbol->contract, correct e.g. ID=SPACE ID, has ONG) -> CoinGecko (free fallback)."""
     try:
         rows = ex.private_get_v5_asset_coin_query_info({"coin": coin}).get("result", {}).get("rows", [])
         found = {}
@@ -139,6 +143,20 @@ def _resolve_contract(coin):
             if found.get(ns): return ns, found[ns]
     except Exception:
         pass
+    cmc = os.environ.get("CMC_API_KEY")                                  # 2. CoinMarketCap
+    if cmc:
+        try:
+            coins = (requests.get("https://pro-api.coinmarketcap.com/v2/cryptocurrency/info",
+                headers={"X-CMC_PRO_API_KEY": cmc}, params={"symbol": coin}, timeout=10)
+                .json().get("data", {}).get(coin)) or []
+            found = {}
+            for x in ((coins[0].get("contract_address") if coins else []) or []):
+                ns = CMC_TO_NANSEN.get((x.get("platform") or {}).get("name", "")); a = x.get("contract_address", "")
+                if ns and a: found[ns] = a
+            for ns in CHAIN_ORDER:
+                if found.get(ns): return ns, found[ns]
+        except Exception:
+            pass
     try:
         cs = requests.get("https://api.coingecko.com/api/v3/search", params={"query": coin}, timeout=8).json().get("coins", [])
         m = next((c for c in cs if c.get("symbol", "").upper() == coin.upper()), None)   # exact only, never guess
