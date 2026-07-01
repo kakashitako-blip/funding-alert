@@ -120,26 +120,46 @@ def git_sync():
         try: subprocess.run(["git", "-C", HERE] + c, capture_output=True, timeout=25)
         except Exception: pass
 
-CG_TO_NANSEN = {"ethereum": "ethereum", "solana": "solana", "base": "base",
-                "arbitrum-one": "arbitrum", "binance-smart-chain": "bnb", "polygon-pos": "polygon"}
+NANSEN_CHAINS = {"Ethereum": "ethereum", "Solana": "solana", "BNB Smart Chain": "bnb",
+                 "Base": "base", "Arbitrum One": "arbitrum", "Polygon PoS": "polygon",
+                 "Polygon": "polygon", "Avalanche C-Chain": "avalanche", "Optimism": "optimism"}
+CG_TO_NANSEN = {"ethereum": "ethereum", "solana": "solana", "base": "base", "arbitrum-one": "arbitrum",
+                "binance-smart-chain": "bnb", "polygon-pos": "polygon", "avalanche": "avalanche"}
+CHAIN_ORDER = ["ethereum", "solana", "bnb", "base", "arbitrum", "polygon", "avalanche", "optimism"]
 
-def onchain_signal(coin):
-    """SHADOW manipulation read via Nansen: net flow of top-100 holders over 24h.
-    Net OUTFLOW = insiders distributing into the pump = manipulation confirmed.
-    Resolve contract+chain via CoinGecko, then query Nansen tgm/flows. Non-blocking."""
-    key = os.environ.get("NANSEN_API_KEY")
+def _resolve_contract(coin):
+    """Bybit coin-info (exact ticker, best for spot-listed incl. ticker mismatches) -> CoinGecko fallback (perp-only coins)."""
+    try:
+        rows = ex.private_get_v5_asset_coin_query_info({"coin": coin}).get("result", {}).get("rows", [])
+        found = {}
+        for c in (rows[0].get("chains", []) if rows else []):
+            ns = NANSEN_CHAINS.get(c.get("chainType", "")); a = c.get("contractAddress", "")
+            if ns and a: found[ns] = a
+        for ns in CHAIN_ORDER:
+            if found.get(ns): return ns, found[ns]
+    except Exception:
+        pass
     try:
         cs = requests.get("https://api.coingecko.com/api/v3/search", params={"query": coin}, timeout=8).json().get("coins", [])
-        m = next((c for c in cs if c.get("symbol", "").upper() == coin.upper()), None)  # exact only, never guess
-        if not m: return "onchain=no-data(unresolved)"
-        d = requests.get(f"https://api.coingecko.com/api/v3/coins/{m['id']}",
-                         params={"localization": "false", "tickers": "false", "market_data": "false",
-                                 "community_data": "false", "developer_data": "false"}, timeout=8).json()
-        plats = {k: v for k, v in (d.get("platforms") or {}).items() if v}
-        chain = addr = None
-        for cg, ns in CG_TO_NANSEN.items():
-            if plats.get(cg): chain, addr = ns, plats[cg]; break
-        if not addr: return "onchain=no-data(perp-only)"
+        m = next((c for c in cs if c.get("symbol", "").upper() == coin.upper()), None)   # exact only, never guess
+        if m:
+            d = requests.get(f"https://api.coingecko.com/api/v3/coins/{m['id']}",
+                params={"localization": "false", "tickers": "false", "market_data": "false",
+                        "community_data": "false", "developer_data": "false"}, timeout=8).json()
+            plats = {k: v for k, v in (d.get("platforms") or {}).items() if v}
+            for cg, ns in CG_TO_NANSEN.items():
+                if plats.get(cg): return ns, plats[cg]
+    except Exception:
+        pass
+    return None, None
+
+def onchain_signal(coin):
+    """SHADOW manipulation read via Nansen tgm/flows: 24h net flow of top-100 holders.
+    Net OUTFLOW = insiders distributing into the pump = manipulation confirmed. Non-blocking."""
+    key = os.environ.get("NANSEN_API_KEY")
+    try:
+        chain, addr = _resolve_contract(coin)
+        if not addr: return "onchain=no-data(unresolved)"
         if not key: return "onchain=no-key"
         now = datetime.now(timezone.utc)
         frm = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ"); to = now.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -149,7 +169,7 @@ def onchain_signal(coin):
                   "label": "top_100_holders"}, timeout=15)
         if r.status_code != 200: return f"onchain=no-data(nansen{r.status_code})"
         data = r.json().get("data", [])
-        if not data: return "onchain=no-data"
+        if not data: return "onchain=no-data(untracked)"
         net = sum((x.get("total_inflows_count") or 0) + (x.get("total_outflows_count") or 0) for x in data)
         return f"onchain={'DISTRIBUTING' if net < 0 else 'accumulating'}(net{net:+.0f})"
     except Exception:
