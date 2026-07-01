@@ -120,6 +120,29 @@ def git_sync():
         try: subprocess.run(["git", "-C", HERE] + c, capture_output=True, timeout=25)
         except Exception: pass
 
+def onchain_signal(coin):
+    """SHADOW on-chain distribution read via free DEX APIs (CoinGecko -> DexScreener).
+    Non-blocking annotation only. Returns a short tag; 'no-data' when unresolvable/thin."""
+    try:
+        cs = requests.get("https://api.coingecko.com/api/v3/search", params={"query": coin}, timeout=8).json().get("coins", [])
+        m = next((c for c in cs if c.get("symbol", "").upper() == coin.upper()), cs[0] if cs else None)
+        if not m: return "onchain=no-data"
+        d = requests.get(f"https://api.coingecko.com/api/v3/coins/{m['id']}",
+                         params={"localization": "false", "tickers": "false", "market_data": "false",
+                                 "community_data": "false", "developer_data": "false"}, timeout=8).json()
+        plats = {k: v for k, v in (d.get("platforms") or {}).items() if v}
+        addr = next((plats[c] for c in ["ethereum", "solana", "base", "arbitrum-one",
+                    "binance-smart-chain", "polygon-pos"] if plats.get(c)), None) or (list(plats.values())[0] if plats else None)
+        if not addr: return "onchain=no-data(perp-only)"
+        pairs = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{addr}", timeout=8).json().get("pairs") or []
+        if not pairs: return "onchain=no-data(no-dex)"
+        p = max(pairs, key=lambda x: (x.get("liquidity") or {}).get("usd", 0) or 0)
+        tx = p.get("txns", {}).get("h1", {}); b, se = tx.get("buys", 0), tx.get("sells", 0)
+        if b + se == 0: return "onchain=no-data(idle)"
+        return f"onchain={'DISTRIBUTING' if se > b else 'accumulating'}({b}b/{se}s)"
+    except Exception:
+        return "onchain=no-data"
+
 def place(coin, sig, dry):
     sym = f"{coin}/USDT:USDT"
     ex.load_markets()
@@ -134,7 +157,7 @@ def place(coin, sig, dry):
     line = (f"SHORT {coin} {qty} @~{px:.6g} | SL {stop:.6g} (+{STOP_PCT:.0f}%) | "
             f"TP {tp:.6g} (-{TP_PCT:.0f}%) | risk ${RISK:.0f} | pump +{sig['pump']:.0f}% prem {sig['prem']:.2f}%")
     if dry:
-        return "WOULD " + line
+        return "WOULD " + line + " | " + onchain_signal(coin)
     ex.set_leverage(LEV, sym)
     ex.create_order(sym, "market", "sell", float(qty), None,
                     params={"stopLoss": ex.price_to_precision(sym, stop),
@@ -144,8 +167,9 @@ def place(coin, sig, dry):
     except Exception:
         pos = []
     pos.append({"coin": coin, "side": "short", "entry": px, "sl": stop, "tp": tp, "auto": True})
+    oc = onchain_signal(coin)                          # SHADOW: annotate, does NOT block
     json.dump(pos, open(POS, "w"), indent=2); git_sync()
-    return "✅ " + line
+    return "✅ " + line + " | " + oc
 
 def log_trade(p, exitpx, pnl):
     import csv
