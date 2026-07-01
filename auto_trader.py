@@ -29,7 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 POS = os.path.join(HERE, "positions.json"); STATE = os.path.join(HERE, "auto_state.json")
 KILL = os.path.join(HERE, "STOP_AUTO")
 
-RISK, STOP_PCT, TP_PCT, LEV = 10.0, 20.0, 12.0, 4
+RISK, STOP_PCT, TP_PCT, LEV = 20.0, 20.0, 12.0, 4
 MAX_CONCURRENT, MAX_NEW_PER_DAY, SCAN_EVERY = 2, 4, 300   # 5-min scan: catch fast rejections
 LOOK, LONG = 288, 672          # 3-day and 7-day windows (15m bars)
 VOL_MIN = 8.0                  # min 24h volume-surge vs baseline; backtest 146ev/95c: 77%->83% win, stops 20%->15%
