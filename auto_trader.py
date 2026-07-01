@@ -19,7 +19,7 @@ Runs on the Mac (Bybit reachable). Safety:
   python3 auto_trader.py            # live loop (scans every 15 min)
 """
 import os, time, json, sys
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import requests, ccxt
 
 KEY = os.environ.get("BYBIT_API_KEY"); SEC = os.environ.get("BYBIT_API_SECRET")
@@ -120,26 +120,38 @@ def git_sync():
         try: subprocess.run(["git", "-C", HERE] + c, capture_output=True, timeout=25)
         except Exception: pass
 
+CG_TO_NANSEN = {"ethereum": "ethereum", "solana": "solana", "base": "base",
+                "arbitrum-one": "arbitrum", "binance-smart-chain": "bnb", "polygon-pos": "polygon"}
+
 def onchain_signal(coin):
-    """SHADOW on-chain distribution read via free DEX APIs (CoinGecko -> DexScreener).
-    Non-blocking annotation only. Returns a short tag; 'no-data' when unresolvable/thin."""
+    """SHADOW manipulation read via Nansen: net flow of top-100 holders over 24h.
+    Net OUTFLOW = insiders distributing into the pump = manipulation confirmed.
+    Resolve contract+chain via CoinGecko, then query Nansen tgm/flows. Non-blocking."""
+    key = os.environ.get("NANSEN_API_KEY")
     try:
         cs = requests.get("https://api.coingecko.com/api/v3/search", params={"query": coin}, timeout=8).json().get("coins", [])
-        m = next((c for c in cs if c.get("symbol", "").upper() == coin.upper()), cs[0] if cs else None)
-        if not m: return "onchain=no-data"
+        m = next((c for c in cs if c.get("symbol", "").upper() == coin.upper()), None)  # exact only, never guess
+        if not m: return "onchain=no-data(unresolved)"
         d = requests.get(f"https://api.coingecko.com/api/v3/coins/{m['id']}",
                          params={"localization": "false", "tickers": "false", "market_data": "false",
                                  "community_data": "false", "developer_data": "false"}, timeout=8).json()
         plats = {k: v for k, v in (d.get("platforms") or {}).items() if v}
-        addr = next((plats[c] for c in ["ethereum", "solana", "base", "arbitrum-one",
-                    "binance-smart-chain", "polygon-pos"] if plats.get(c)), None) or (list(plats.values())[0] if plats else None)
+        chain = addr = None
+        for cg, ns in CG_TO_NANSEN.items():
+            if plats.get(cg): chain, addr = ns, plats[cg]; break
         if not addr: return "onchain=no-data(perp-only)"
-        pairs = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{addr}", timeout=8).json().get("pairs") or []
-        if not pairs: return "onchain=no-data(no-dex)"
-        p = max(pairs, key=lambda x: (x.get("liquidity") or {}).get("usd", 0) or 0)
-        tx = p.get("txns", {}).get("h1", {}); b, se = tx.get("buys", 0), tx.get("sells", 0)
-        if b + se == 0: return "onchain=no-data(idle)"
-        return f"onchain={'DISTRIBUTING' if se > b else 'accumulating'}({b}b/{se}s)"
+        if not key: return "onchain=no-key"
+        now = datetime.now(timezone.utc)
+        frm = (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ"); to = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        r = requests.post("https://api.nansen.ai/api/v1/tgm/flows",
+            headers={"apiKey": key, "Content-Type": "application/json"},
+            json={"chain": chain, "token_address": addr, "date": {"from": frm, "to": to},
+                  "label": "top_100_holders"}, timeout=15)
+        if r.status_code != 200: return f"onchain=no-data(nansen{r.status_code})"
+        data = r.json().get("data", [])
+        if not data: return "onchain=no-data"
+        net = sum((x.get("total_inflows_count") or 0) + (x.get("total_outflows_count") or 0) for x in data)
+        return f"onchain={'DISTRIBUTING' if net < 0 else 'accumulating'}(net{net:+.0f})"
     except Exception:
         return "onchain=no-data"
 
