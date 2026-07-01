@@ -32,6 +32,7 @@ KILL = os.path.join(HERE, "STOP_AUTO")
 RISK, STOP_PCT, TP_PCT, LEV = 10.0, 20.0, 12.0, 4
 MAX_CONCURRENT, MAX_NEW_PER_DAY, SCAN_EVERY = 2, 4, 300   # 5-min scan: catch fast rejections
 LOOK, LONG = 288, 672          # 3-day and 7-day windows (15m bars)
+VOL_MIN = 8.0                  # min 24h volume-surge vs baseline; backtest 146ev/95c: 77%->83% win, stops 20%->15%
 
 ex = ccxt.bybit({"apiKey": KEY, "secret": SEC, "options": {"defaultType": "linear"}})
 
@@ -62,7 +63,7 @@ def get_bars(coin):
     for t in sorted(P):
         if t in M and t in I and I[t] > 0:
             r = P[t]
-            bars.append({"h": float(r[2]), "l": float(r[3]), "c": float(r[4]),
+            bars.append({"h": float(r[2]), "l": float(r[3]), "c": float(r[4]), "v": float(r[5]),
                          "prem": (M[t] - I[t]) / I[t] * 100})
     return bars
 
@@ -80,7 +81,11 @@ def entry_signal(bars):
     if b["c"] < rh * 0.93: return None                         # near the peak
     if b["c"] >= prev["c"]: return None                        # rejecting (turning down)
     if b["prem"] > 0: return None                              # anti-squeeze: skip if perp at a PREMIUM (funding gate already passed via candidate)
-    return {"entry": b["c"], "pump": (rh / rl - 1) * 100, "prem": b["prem"]}
+    base = [x["v"] for x in bars[i - LOOK:i - 96]]; recent = [x["v"] for x in bars[i - 96:i]]
+    bm = sum(base) / len(base) if base else 0
+    vsurge = sum(recent) / len(recent) / bm if (bm > 0 and recent) else 0   # 24h vol vs prior 3-7d baseline
+    if vsurge < VOL_MIN: return None                           # volume-surge filter (backtest: +6pp win, -5pp stops)
+    return {"entry": b["c"], "pump": (rh / rl - 1) * 100, "prem": b["prem"], "vsurge": vsurge}
 
 def candidates():
     """Bybit perps at deep negative FUNDING (direct from Bybit tickers — free, fresh,
@@ -205,7 +210,8 @@ def place(coin, sig, dry):
         return f"skip {coin}: qty {qty_raw:.4g} < min {mn} (raise risk for this coin)"
     qty = ex.amount_to_precision(sym, qty_raw)
     line = (f"SHORT {coin} {qty} @~{px:.6g} | SL {stop:.6g} (+{STOP_PCT:.0f}%) | "
-            f"TP {tp:.6g} (-{TP_PCT:.0f}%) | risk ${RISK:.0f} | pump +{sig['pump']:.0f}% prem {sig['prem']:.2f}%")
+            f"TP {tp:.6g} (-{TP_PCT:.0f}%) | risk ${RISK:.0f} | pump +{sig['pump']:.0f}% "
+            f"vol {sig.get('vsurge', 0):.0f}x prem {sig['prem']:.2f}%")
     if dry:
         return "WOULD " + line + " | " + onchain_signal(coin)
     ex.set_leverage(LEV, sym)

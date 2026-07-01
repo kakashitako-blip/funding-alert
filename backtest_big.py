@@ -14,8 +14,8 @@ Exits: hold / pt8 / pt12 / cascade6 / trail4 (bot uses pt12).
 import requests, statistics, time, sys, bisect, json, os
 
 BYBIT = "https://api.bybit.com"
-LEV, INT, LOOK, LONG, FWD, DAYS = 4, "15", 288, 672, 288, 90
-RULES = ["hold", "pt8", "pt12", "cascade6", "trail4"]
+LEV, INT, LOOK, LONG, FWD, DAYS = 4, "15", 288, 672, 288, 365
+RULES = ["hold", "pt8", "pt12", "pt20", "cascade6", "trail4"]
 HERE = os.path.dirname(os.path.abspath(__file__))
 UNI = os.path.join(HERE, "bt_universe.json")
 EVF = os.path.join(HERE, "bt_events.json")
@@ -37,7 +37,7 @@ def kl_paged(sym, days=DAYS):
 
 def funding_hist(sym):
     out, end = [], None
-    for _ in range(5):                       # paginate ~1000 records to cover 90d
+    for _ in range(8):                       # paginate ~1600 records to cover 365d
         p = {"category": "linear", "symbol": sym, "limit": 200}
         if end: p["endTime"] = end
         try:
@@ -56,8 +56,8 @@ def series(coin):
     fts = [t for t, _ in fh]; bars = []
     for t in sorted(P):
         r = P[t]; i = bisect.bisect_right(fts, int(t)) - 1
-        bars.append({"h": float(r[2]), "l": float(r[3]), "c": float(r[4]),
-                     "fund": fh[i][1] if i >= 0 else None})
+        bars.append({"t": int(t), "h": float(r[2]), "l": float(r[3]), "c": float(r[4]),
+                     "v": float(r[5]), "fund": fh[i][1] if i >= 0 else None})
     return bars
 
 def simulate(bars, i, entry, stop, tp):
@@ -70,6 +70,7 @@ def simulate(bars, i, entry, stop, tp):
             if "hold" not in exits and l <= tp: exits["hold"] = ("TP", tp)
             if "pt8" not in exits and l <= entry * 0.92: exits["pt8"] = ("PT", entry * 0.92)
             if "pt12" not in exits and l <= entry * 0.88: exits["pt12"] = ("PT", entry * 0.88)
+            if "pt20" not in exits and l <= entry * 0.80: exits["pt20"] = ("PT", entry * 0.80)
             if "cascade6" not in exits and l <= entry * 0.94: exits["cascade6"] = ("PT", entry * 0.94)
             if "trail4" not in exits and best_low < entry * 0.97 and h >= best_low * 1.04:
                 exits["trail4"] = ("TRAIL", best_low * 1.04)
@@ -93,11 +94,15 @@ def backtest(coin):
             lows = sorted(x["l"] for x in bars[i - LOOK:i]); tp = lows[int(len(lows) * 0.15)]
             if tp < entry:
                 e = simulate(bars, i, entry, stop, tp)
-                ev.append({"coin": coin, "entry": entry, "exits": e["exits"], "mae": e["mae"]}); i += 96; continue
+                base = [x["v"] for x in bars[i - LOOK:i - 96]]; recent = [x["v"] for x in bars[i - 96:i]]
+                bm = (sum(base) / len(base)) if base else 0
+                vsurge = round(sum(recent) / len(recent) / bm, 2) if (bm > 0 and recent) else 0  # 24h vol vs prior baseline
+                ev.append({"coin": coin, "ts": bars[i]["t"], "entry": entry, "exits": e["exits"],
+                           "mae": e["mae"], "vsurge": vsurge}); i += 96; continue
         i += 1
     return ev
 
-def build_universe(mc_lo=8e6, mc_hi=200e6, cap=300):
+def build_universe(mc_lo=2e6, mc_hi=350e6, cap=700):
     perps, cursor = set(), None
     for _ in range(8):
         p = {"category": "linear", "limit": 1000}
@@ -110,11 +115,17 @@ def build_universe(mc_lo=8e6, mc_hi=200e6, cap=300):
         cursor = res.get("nextPageCursor")
         if not cursor: break
     caps = {}
-    for page in range(1, 6):
-        try: arr = requests.get("https://api.coingecko.com/api/v3/coins/markets",
-                params={"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page}, timeout=25).json()
-        except Exception: break
+    for page in range(1, 7):
+        arr = None
+        for attempt in range(4):                     # retry on CoinGecko rate limits (429 -> non-list body)
+            try: arr = requests.get("https://api.coingecko.com/api/v3/coins/markets",
+                    params={"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page}, timeout=25).json()
+            except Exception: arr = None
+            if isinstance(arr, list): break
+            time.sleep(6 * (attempt + 1))
+        if not isinstance(arr, list): continue
         for c in arr:
+            if not isinstance(c, dict): continue
             sym = (c.get("symbol") or "").upper(); mc = c.get("market_cap") or 0
             if sym and mc: caps.setdefault(sym, mc)
         time.sleep(2)
@@ -147,6 +158,8 @@ if __name__ == "__main__":
         print(f"slice {a}:{b} — {len(coins)} coins", flush=True)
         for c in coins:
             ev = backtest(c)
-            if ev: evs.extend(ev); print(f"  {c}: {len(ev)}", flush=True)
+            if ev:
+                evs.extend(ev); print(f"  {c}: {len(ev)}", flush=True)
+                json.dump(evs, open(EVF, "w"))          # incremental save — timeout-safe
         json.dump(evs, open(EVF, "w"))
         print(f"done. total events now: {len(evs)}")
